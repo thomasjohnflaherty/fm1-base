@@ -18,8 +18,8 @@ APP_DIR holds the app (app.h, app.c, its sources) and its fm1.toml:
   o2 = ["dsp/engine.c"]      separate units compiled at -O2 (the app's DSP), relative to APP_DIR (globs too); each with
                              its own directory on the include path
   o2_cflags = ["-DX=1"]      more flags for those; o2_include = ["lib/prefix.h"]: a header included first in each
-  o2_unit_cflags = {"dsp/engine.c" = ["-O2"]}   flags for one o2 unit only (its path as in o2), after o2_cflags:
-                             a unit at another optimization level than the others (the last -O wins)
+  o2_alt = ["dsp/engine.c"]  o2 units (paths as in o2) that get o2_alt_cflags = ["-O2"] after o2_cflags: a unit at
+                             another optimization level than the others (the last -O wins)
   include = ["dsp/lib"]      more include directories, relative to APP_DIR
   device_include = ["inc"]   include directories for the firmware only (headers the toolchain lacks)
   mmio_skip = ["dsp/lib/"]   paths whose numbers are not addresses (a library's tables): the register check skips
@@ -586,7 +586,7 @@ def build_app():
     for u in CONF.get("o2", []):
         for f in (sorted(APP.glob(u)) if any(ch in u for ch in "*?[") else [APP / u]):
             o = OUT / "o2" / ("_".join(f.relative_to(APP).with_suffix("").parts) + ".o")
-            units.append(("cc", *o2, *o2_more, *CONF.get("o2_unit_cflags", {}).get(str(f.relative_to(APP)), []),
+            units.append(("cc", *o2, *o2_more, *(CONF.get("o2_alt_cflags", []) if str(f.relative_to(APP)) in CONF.get("o2_alt", []) else []),
                           *inc(f.parent), *ir_out, "-c", f, "-o", o.with_suffix(".ll") if ir else o))
             objs.append(o)
             o2_units.append((f, o))
@@ -818,7 +818,7 @@ def o2_objects(cc, base_flags, out):
 
     def one(job):
         f, o = job
-        r = subprocess.run([cc, *base_flags, *extra, *CONF.get("o2_unit_cflags", {}).get(str(f.relative_to(APP)), []),
+        r = subprocess.run([cc, *base_flags, *extra, *(CONF.get("o2_alt_cflags", []) if str(f.relative_to(APP)) in CONF.get("o2_alt", []) else []),
                             f"-I{f.parent}", "-c", str(f), "-o", str(o)],
                            capture_output=True, text=True)
         return r.stderr if r.returncode else ""
