@@ -40,7 +40,10 @@ SECTIONS
     .bss (NOLOAD) : { _bss_start = .; *(.bss*) *(.sbss*) *(COMMON) *(.*_bss) *(.bd_base) . = ALIGN(4); _bss_end = .; } > RAM
     .pool (NOLOAD) : { _pool_start = .; *(.pool*) . = ALIGN(4); _pool_end = .; } > POOL
     .noinit (NOLOAD) : { *(.noinit*) } > NOINIT
-    _guard0 = 0x01C74000; _ustack_lo = 0x01C74100; _ustack_top = 0x01C7A000;
-    _guard1 = 0x01C7A000; _sstack_lo = 0x01C7A100; _sstack_top = 0x01C7C000;
+    /* Two stacks of 16,128 B each (they were 24,320 B for the main loop and 7,936 B for the interrupts). The interrupt stack holds
+     * the audio render and, nested in it, the 1 kHz app tick: a Hapax port rack of 8 effects went over 7,936 B (fm1-hapax
+     * STACK-CRASH.md); the main loop used about 3.4 KB. */
+    _guard0 = 0x01C74000; _ustack_lo = 0x01C74100; _ustack_top = 0x01C78000;
+    _guard1 = 0x01C78000; _sstack_lo = 0x01C78100; _sstack_top = 0x01C7C000;
     /DISCARD/ : { *(.comment) *(.note*) }
 }
