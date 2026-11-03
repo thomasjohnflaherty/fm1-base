@@ -148,19 +148,19 @@ void fm1_timer5_irq(void)
     if (fm1b_dbg.in_audio)
         fm1b_dbg.nested++;
     fm1_input_tick();
-    /* 2 kHz: all USB SIE traffic lives here. This ISR now nests into the audio render (so the key
+    /* 2 kHz for the poll, 10 kHz for the audio refill: all USB SIE traffic lives here. This ISR now nests into the audio render (so the key
      * matrix keeps its rhythm, below); USB shares the MIDI queues with the audio ISR, so a poll that
      * falls inside the render waits for the first tick outside it, as it did before the nesting. */
-    if (sub % 5u == 0u) {
+    if (sub % 5u == 0u)
         usb_due = 1;
 #if FELUCCA_UAC
-        /* the USB audio stream cannot wait for the render (one packet per 1 ms frame, a render takes
-         * up to ~11.6 ms): it runs nested too. It touches only EP4 (INDEX is set on every access) and
-         * the consumer side of its ring, and usb_poll never runs nested, so the two never interleave */
-        if (fm1b_dbg.in_audio)
-            uac_service();
+    /* the USB audio stream cannot wait for the render (one packet per 1 ms frame, a render takes
+     * up to ~11.6 ms): it runs nested too. It touches only EP4 (INDEX is set on every access) and
+     * the consumer side of its ring, and usb_poll never runs nested, so the two never interleave */
+    /* u42 trial: refill EP4 IN on every tick (iPad IN tokens found an empty FIFO at 1 kHz: u40) */
+    if (fm1b_dbg.in_audio)
+        uac_service();
 #endif
-    }
     if (usb_due && !fm1b_dbg.in_audio) {
         usb_due = 0;
         usb_poll();
