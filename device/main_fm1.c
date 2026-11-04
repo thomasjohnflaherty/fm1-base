@@ -31,8 +31,6 @@ static uint32_t wdt_stage __attribute__((section(".noinit")));   /* the main loo
                                                                   * 2 Bluetooth, 3 the app's loop, 4 USB, 5 a frame,
                                                                   * 6 input (fm1b_dbg.stage) */
 
-static int plat_in_render(void) { return fm1b_dbg.in_audio != 0; }
-
 static void render_block(int32_t *o)                /* ALNK0: one half, measured */
 {
     uint32_t t0 = fm1_ticks(), us, budget = HALF_FRAMES * 1000000u / FS;
@@ -158,7 +156,6 @@ void fm1_timer5_irq(void)
         }
 #endif
     } else {
-        in_t5 = 1;
         fm1_input_tick();
         /* 2 kHz: all USB SIE traffic lives here. This ISR now nests into the audio render (so the key
          * matrix keeps its rhythm, below); USB shares the MIDI queues with the audio ISR, so a poll that
@@ -187,7 +184,6 @@ void fm1_timer5_irq(void)
             in_tick = 0;
         }
     #endif
-        in_t5 = 0;
     }
     if (++sub == 10u)
         sub = 0;

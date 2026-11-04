@@ -142,12 +142,11 @@ void plat_leds(uint32_t buttons, uint32_t keys)    /* PLAY green, unless red (re
 /* the 1 kHz tick (app_tick) runs in the timer interrupt: the main loop locks it out around what they share. The lock
  * nests; MIDI sent from the tick itself needs none (nothing that sends interrupts it) */
 static volatile uint8_t in_tick;
-/* The main loop's lock leaves TIMER5 running, for USB audio: a UI frame under load holds the lock over 2 ms, and one
- * packet goes each 1 ms. lock_soft: the render is masked, and fm1_timer5_irq only serves uac_service, so what the lock
- * protects stays still. A lock taken inside TIMER5 (in_t5) or the render, or with no audio interrupt to mask
- * (lock_audio 0: the start, safe mode, an update), still turns interrupts off. */
-static volatile uint8_t in_t5, lock_soft, lock_audio;
-static int plat_in_render(void);                 /* main_fm1.c */
+/* plat_lock_ui, for the UI frame's long locks: under load one holds the lock over 2 ms, and USB audio sends a packet
+ * each 1 ms. lock_soft: the render is masked and fm1_timer5_irq only serves uac_service, so what the lock protects
+ * stays still. Only for these: a tick that comes during lock_soft is gone, where plat_lock only delays it, and the
+ * main loop takes short locks all the time. lock_audio 0: no audio interrupt to mask (the start, safe mode, an update) */
+static volatile uint8_t lock_soft, lock_audio;
 static uint32_t lock_depth;
 uint32_t lock_max, lock_from;                     /* the longest the app kept interrupts off (us), and from where */
 static uint32_t lock_t0, lock_ra;
@@ -158,16 +157,23 @@ uint32_t plat_lock(void)
     if (lock_depth == 0) {
         lock_t0 = fm1_ticks();
         lock_ra = (uint32_t)(uintptr_t)__builtin_return_address(0);
-#if FELUCCA_UAC
-        if (lock_audio && !in_t5 && !plat_in_render() && !radio_quiet) {
-            lock_soft = 1;
-            fm1_irq_mask(FM1_IRQ_ALNK0);
-        }
-#endif
     }
     d = lock_depth++;
     if (lock_soft)
         fm1_irq_on();
+    return d;
+}
+uint32_t plat_lock_ui(void)
+{
+    uint32_t d = plat_lock();
+#if FELUCCA_UAC
+    if (d == 0 && lock_audio && !radio_quiet) {
+        lock_ra = (uint32_t)(uintptr_t)__builtin_return_address(0);
+        lock_soft = 1;
+        fm1_irq_mask(FM1_IRQ_ALNK0);
+        fm1_irq_on();
+    }
+#endif
     return d;
 }
 void plat_unlock(uint32_t f)

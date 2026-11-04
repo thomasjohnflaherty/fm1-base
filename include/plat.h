@@ -153,6 +153,7 @@ int plat_net_task(void (*fn)(void *), void *arg, const char *name);   /* a task 
 /* the 1 kHz tick (app_tick, an app with APP_TICK) runs in the timer interrupt: the main loop locks it out around
  * what they share (it nests) */
 uint32_t plat_lock(void);
+uint32_t plat_lock_ui(void);                     /* the same, main loop only, for a long lock: USB audio goes on during it */
 void plat_unlock(uint32_t f);
 void plat_yield(void);
 void plat_log(const char *line);

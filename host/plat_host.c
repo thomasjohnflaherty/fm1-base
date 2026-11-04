@@ -196,6 +196,7 @@ void plat_glow(int on) { glow_on = on; }
 void plat_play_red(int red) { (void)red; }      /* the device's PLAY colour: green, red while recording */
 void plat_leds(uint32_t b, uint32_t k) { plat_lights(b, k, glow_on ? ~b : 0u, 0, glow_on ? 2 : 0); }
 uint32_t plat_lock(void) { return 0; }  /* one thread: the tick runs between the main loop's steps (run_ms) */
+uint32_t plat_lock_ui(void) { return plat_lock(); }
 void plat_unlock(uint32_t f) { (void)f; }
 void plat_yield(void)
 {
