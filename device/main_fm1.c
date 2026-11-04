@@ -31,6 +31,8 @@ static uint32_t wdt_stage __attribute__((section(".noinit")));   /* the main loo
                                                                   * 2 Bluetooth, 3 the app's loop, 4 USB, 5 a frame,
                                                                   * 6 input (fm1b_dbg.stage) */
 
+static int plat_in_render(void) { return fm1b_dbg.in_audio != 0; }
+
 static void render_block(int32_t *o)                /* ALNK0: one half, measured */
 {
     uint32_t t0 = fm1_ticks(), us, budget = HALF_FRAMES * 1000000u / FS;
@@ -117,6 +119,7 @@ static void audio_init(void)
     for (i = 0; i < 2u * HALF_WORDS; i++)
         abuf[i] = 0;
     fm1_audio_init(abuf, HALF_WORDS, isr_alnk0, 3);
+    lock_audio = 1;
 }
 
 static void audio_silence(void)                     /* IRQs off (flash erase): the DMA would loop stale audio */
@@ -147,34 +150,45 @@ void fm1_timer5_irq(void)
     fm1b_dbg.timer_irqs++;
     if (fm1b_dbg.in_audio)
         fm1b_dbg.nested++;
-    fm1_input_tick();
-    /* 2 kHz: all USB SIE traffic lives here. This ISR now nests into the audio render (so the key
-     * matrix keeps its rhythm, below); USB shares the MIDI queues with the audio ISR, so a poll that
-     * falls inside the render waits for the first tick outside it, as it did before the nesting. */
-    if (sub % 5u == 0u) {
-        usb_due = 1;
+    if (lock_soft) {                                /* the main loop holds the lock: the stream goes on, the rest waits */
 #if FELUCCA_UAC
-        /* the USB audio stream cannot wait for the render (one packet per 1 ms frame, a render takes
-         * up to ~11.6 ms): it runs nested too. It touches only EP4 (INDEX is set on every access) and
-         * the consumer side of its ring, and usb_poll never runs nested, so the two never interleave */
-        if (fm1b_dbg.in_audio)
+        if (sub % 5u == 0u) {
+            usb_due = 1;
             uac_service();
+        }
 #endif
+    } else {
+        in_t5 = 1;
+        fm1_input_tick();
+        /* 2 kHz: all USB SIE traffic lives here. This ISR now nests into the audio render (so the key
+         * matrix keeps its rhythm, below); USB shares the MIDI queues with the audio ISR, so a poll that
+         * falls inside the render waits for the first tick outside it, as it did before the nesting. */
+        if (sub % 5u == 0u) {
+            usb_due = 1;
+    #if FELUCCA_UAC
+            /* the USB audio stream cannot wait for the render (one packet per 1 ms frame, a render takes
+             * up to ~11.6 ms): it runs nested too. It touches only EP4 (INDEX is set on every access) and
+             * the consumer side of its ring, and usb_poll never runs nested, so the two never interleave */
+            if (fm1b_dbg.in_audio)
+                uac_service();
+    #endif
+        }
+        if (usb_due && !fm1b_dbg.in_audio) {
+            usb_due = 0;
+            usb_poll();
+    #if FM1B_TRS
+            uart_midi_poll();                           /* the TRS jack: same context, same queue */
+    #endif
+        }
+    #ifdef APP_TICK
+        if (sub == 0u) {                                /* 1 kHz: the app's tick (a clock, a sequencer) */
+            in_tick = 1;
+            app_tick();
+            in_tick = 0;
+        }
+    #endif
+        in_t5 = 0;
     }
-    if (usb_due && !fm1b_dbg.in_audio) {
-        usb_due = 0;
-        usb_poll();
-#if FM1B_TRS
-        uart_midi_poll();                           /* the TRS jack: same context, same queue */
-#endif
-    }
-#ifdef APP_TICK
-    if (sub == 0u) {                                /* 1 kHz: the app's tick (a clock, a sequencer) */
-        in_tick = 1;
-        app_tick();
-        in_tick = 0;
-    }
-#endif
     if (++sub == 10u)
         sub = 0;
     {
@@ -703,6 +717,7 @@ static void fm1_fault(const fm1_crash_t *c)
 #ifdef APP_FAULT
     app_fault(c);                                   /* the app's first (its second core: given up, or this is it) */
 #endif
+    lock_audio = 0;
     fm1_audio_stop();
     lcd_fill(0, 0, 240, 240, RGB(160, 0, 0));
     sys_box(0, 8, 240, SYS_S, APP_NAME " CRASH", C_WHITE, 1);
@@ -724,6 +739,7 @@ static void fm1_fault(const fm1_crash_t *c)
 
 static void enter_uboot(const char *why)
 {
+    lock_audio = 0;
     fm1_audio_stop();
     lcd_fill(0, 0, 240, 240, C_BLACK);
     sys_box(0, 110, 240, SYS_S, why, C_WHITE, 1);

@@ -142,27 +142,52 @@ void plat_leds(uint32_t buttons, uint32_t keys)    /* PLAY green, unless red (re
 /* the 1 kHz tick (app_tick) runs in the timer interrupt: the main loop locks it out around what they share. The lock
  * nests; MIDI sent from the tick itself needs none (nothing that sends interrupts it) */
 static volatile uint8_t in_tick;
+/* The main loop's lock leaves TIMER5 running, for USB audio: a UI frame under load holds the lock over 2 ms, and one
+ * packet goes each 1 ms. lock_soft: the render is masked, and fm1_timer5_irq only serves uac_service, so what the lock
+ * protects stays still. A lock taken inside TIMER5 (in_t5) or the render, or with no audio interrupt to mask
+ * (lock_audio 0: the start, safe mode, an update), still turns interrupts off. */
+static volatile uint8_t in_t5, lock_soft, lock_audio;
+static int plat_in_render(void);                 /* main_fm1.c */
 static uint32_t lock_depth;
 uint32_t lock_max, lock_from;                     /* the longest the app kept interrupts off (us), and from where */
 static uint32_t lock_t0, lock_ra;
 uint32_t plat_lock(void)
 {
+    uint32_t d;
     fm1_irq_off();
     if (lock_depth == 0) {
         lock_t0 = fm1_ticks();
         lock_ra = (uint32_t)(uintptr_t)__builtin_return_address(0);
+#if FELUCCA_UAC
+        if (lock_audio && !in_t5 && !plat_in_render() && !radio_quiet) {
+            lock_soft = 1;
+            fm1_irq_mask(FM1_IRQ_ALNK0);
+        }
+#endif
     }
-    return lock_depth++;
+    d = lock_depth++;
+    if (lock_soft)
+        fm1_irq_on();
+    return d;
 }
 void plat_unlock(uint32_t f)
 {
     (void)f;
-    if (lock_depth && --lock_depth == 0) {
+    if (!lock_depth)
+        return;
+    fm1_irq_off();
+    if (--lock_depth == 0) {
         uint32_t us = (fm1_ticks() - lock_t0) / FM1_TICKS_PER_US;
         if (us > lock_max) {
             lock_max = us;
             lock_from = lock_ra;
         }
+        if (lock_soft) {
+            lock_soft = 0;
+            fm1_irq_unmask(FM1_IRQ_ALNK0);
+        }
+        fm1_irq_on();
+    } else if (lock_soft) {
         fm1_irq_on();
     }
 }
