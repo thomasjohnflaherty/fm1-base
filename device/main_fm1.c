@@ -13,6 +13,8 @@ extern uint32_t _pool_start[], _pool_end[], _rt_start[], _rt_end[], _rt_load[];
 #define FS 44100u
 #define REND_FRAMES HALF_FRAMES             /* app_render's frames per call */
 static int32_t abuf[2u * HALF_WORDS] __attribute__((aligned(4)));
+static int32_t rbuf[2u * REND_FRAMES] __attribute__((aligned(4)));   /* USB audio full: the render at full level lives here,
+                                                     * never in abuf, which the DMA reads (D87) */
 
 #define DBG_MAGIC 0x44424731u                       /* "DBG1": read with `fm1t memr` */
 struct fm1b_dbg {
@@ -50,6 +52,7 @@ static void render_block(int32_t *o)                /* ALNK0: one half, measured
         const int full = 0;
 #endif
         for (k = 0; k < HALF_FRAMES; k += REND_FRAMES) {
+            int32_t *const w = full ? rbuf : o + 2u * k;     /* where the render goes */
             if (radio_quiet) {                        /* the radio calibrating: no flash reads (radio.c) */
 #ifdef APP_QUIET
                 app_quiet(o + 2u * k, REND_FRAMES);
@@ -59,22 +62,23 @@ static void render_block(int32_t *o)                /* ALNK0: one half, measured
                     o[2u * k + i] = 0;
 #endif
             } else {
-                app_render(o + 2u * k, REND_FRAMES, full ? 4096u : gain);
+                app_render(w, REND_FRAMES, full ? 4096u : gain);
             }
             if (radio_quiet)
                 continue;
 #if FELUCCA_UAC_OUT
-            uac_play(o + 2u * k, REND_FRAMES, full ? 4096u : master_pos * master_pos >> 12);   /* the computer's audio,
+            uac_play(w, REND_FRAMES, full ? 4096u : master_pos * master_pos >> 12);   /* the computer's audio,
                                                                                          * at MASTER */
 #endif
 #if FELUCCA_UAC
-            uac_tap(o + 2u * k, REND_FRAMES);       /* the USB audio input: the same master output */
+            uac_tap(w, REND_FRAMES);                /* the USB audio input: the same master output */
 #endif
-            if (full) {                             /* the speaker and headphones: MASTER after the tap */
+            if (full) {                             /* the speaker and headphones: MASTER after the tap; the full-level
+                                                     * render never reaches abuf, only its scaled copy (D87) */
                 const float g = (float)gain * (1.0f / 4096.0f);
                 uint32_t i;
                 for (i = 0; i < 2u * REND_FRAMES; i++)
-                    o[2u * k + i] = (int32_t)((float)o[2u * k + i] * g);
+                    o[2u * k + i] = (int32_t)((float)w[i] * g);
             }
         }
     }
@@ -832,7 +836,7 @@ static void splash(void)                           /* the app's (APP_SPLASH), or
 
 static void fm1_main(void)
 {
-    int32_t knob = 512 * 16;
+    int32_t knob = -1;                              /* (MASTER's smoothed reading; the first reading sets it whole) */
     uint32_t batt_t = 0;                            /* (the battery's last reading, fm1_ms) */
     uint32_t last_frame = 0;
     {
@@ -948,7 +952,7 @@ static void fm1_main(void)
         {   /* MASTER: smoothed, 0..4092; with the keys' readings on, the scan owns the converter and reads it too */
             int32_t a = fm1_an.con || fm1_an.pend ? (int32_t)fm1_an.master : fm1_adc_read(FM1_ADC_MASTER);
             if (a >= 0) {
-                knob += (a * 16 - knob) / 8;
+                knob = knob < 0 ? a * 16 : knob + (a * 16 - knob) / 8;
                 master_pos = mirror_in_master(remote.master >= 0 ? (uint32_t)remote.master : (uint32_t)(knob / 4));
             }
         }
