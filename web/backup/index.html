@@ -16,7 +16,8 @@
      (throws on failure)}; link: send(bytes), read(ms) -> a SysEx message or null, drain(), lost. In the file, after
      the backup's own CRC, each section: its tag, u32 length, the bytes, u32 CRC-32 of the bytes (fm1_backup.py
      split). A restore puts the backup back first, then, once the FM-1 said yes, each section the page knows.
-     PB.area(tag, what, cmd, size) is such an object for a flash area over the firmware's command: fm1_backup.py class Area.
+     PB.area(tag, what, cmd, size, old) is such an object for a flash area over the firmware's command: fm1_backup.py class Area.
+     old: sizes of earlier firmware. Such a section is not written back; the objects of its file restore as usual.
      Its backup gives null when the firmware has no such area: the file then has no section. -->
 <html lang="en">
 <head>
@@ -390,7 +391,7 @@ const PB = (() => {
   }
 
   // a firmware's flash area as a section (fm1_backup.py class Area, its wire and its section)
-  function area(tag, what, cmd, size) {
+  function area(tag, what, cmd, size, old = []) {
     const INFO = 0, READ = 1, BEGIN = 2, WRITE = 3, END = 4, SECTOR = 4096, READ_MAX = 128, WRITE_MAX = 256, SHEAD = 8, ERASE = 20000;
     const STATUS = { 1: "a bad request", 2: "the time for it ended, or the firmware does not allow it", 3: "a flash area that the firmware does not own yet",
                      4: "a flash write", 5: "the area's check", 6: "the area does not mount" };
@@ -443,6 +444,7 @@ const PB = (() => {
       // throws on a section that the firmware will refuse: the page calls it when the file is picked, before any object goes
       check(data) {
         if (state(data) !== 0) return `no working ${what}`;
+        if (old.includes(data.length - SHEAD)) return `${what} of an old size, which is refused: the unit keeps its own`;
         const raw = data.subarray(SHEAD), bad = (m) => fail("file", `This backup is damaged (its section ${tag}: ${m}).`), ids = new Set();
         if (raw.length !== size) throw bad("another size");
         for (let s = 0; s < raw.length / SECTOR; s++) {
@@ -457,7 +459,7 @@ const PB = (() => {
         return what;
       },
       async restore(link, data, onProgress) {
-        if (state(data) !== 0) return;
+        if (state(data) !== 0 || old.includes(data.length - SHEAD)) return;
         const raw = data.subarray(SHEAD), z = blank(raw);
         const step = async (body, wait) => {
           const r = await call(link, body, wait);

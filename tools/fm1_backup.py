@@ -96,16 +96,17 @@ class Area:
     WRITE u32 off, the bytes. END u32 CRC-32 of the data: the firmware checks it, erases the marked sector and reloads.
     changes: what the firmware wrote since the backup's stream ended; not 0, the section does not fit the backup.
     window: 1 for a while after the owner said yes to a restore: only then BEGIN works.
-    The section: u8 format 1, i8 state, u16 0, u32 size, the raw area. Only state 0 is written back."""
+    The section: u8 format 1, i8 state, u16 0, u32 size, the raw area. Only state 0 is written back.
+    old: sizes that the area had in earlier firmware. Such a section is never written back: the objects of its file restore as usual."""
     INFO, READ, BEGIN, WRITE, END = range(5)
-    SECTOR, READ_MAX, WRITE_MAX, HEAD, TRIES = 4096, 128, 256, 8, 3
+    SECTOR, READ_MAX, WRITE_MAX, HEAD, TRIES, OLD = 4096, 128, 256, 8, 3, -128
     WAIT = {"answer": 1.0, "erase": 20.0}
     STATUS = {1: "a bad request", 2: "the time for it ended, or the firmware does not allow it",
               3: "a flash area that the firmware does not own yet", 4: "a flash write", 5: "the area's CRC-32",
               6: "the area does not mount"}
 
-    def __init__(self, tag, what, cmd, size):
-        self.tag, self.what, self.cmd, self.size = tag, what, cmd, size
+    def __init__(self, tag, what, cmd, size, old=()):
+        self.tag, self.what, self.cmd, self.size, self.old = tag, what, cmd, size, old
 
     def call(self, link, body, wait=None):
         link.send(frame(self.cmd, bytes(body)))
@@ -152,6 +153,8 @@ class Area:
         if state:
             return state
         raw = data[self.HEAD:]
+        if len(raw) in self.old:
+            return self.OLD
         if len(raw) != self.size:
             raise BackupError(f"its section {self.tag} has another size ({len(raw)} bytes, not {self.size})")
         ids = set()
@@ -201,7 +204,7 @@ class Area:
 
 
 # firmwares with a flash area: the backup's magic -> Area (fm1.toml backup_area, for the web page)
-AREAS = {b"HXPB": Area("PLOG", "the pattern log", 0x60, 21 * Area.SECTOR)}
+AREAS = {b"HXPB": Area("PLOG", "the pattern log", 0x60, 19 * Area.SECTOR, old=(21 * Area.SECTOR,))}
 
 ANY = Kind()
 # firmwares whose magic need not be given (--magic): an identity prefix -> (magic, name)
@@ -485,13 +488,19 @@ def restore(backend, path, port=None, yes=False, ask=I.ask_tty, out=sys.stdout, 
     area = AREAS.get(magic_of(image))
     mine = [b for t, b in sections if area and t == area.tag]
     others = [(t, b) for t, b in sections if not (area and t == area.tag)]
+    refused = False
     try:
-        if mine and area.check(mine[0]) != 0:
+        state = area.check(mine[0]) if mine else 0
+        if state == Area.OLD:
+            print(f"note: {area.what} in this file has an old size ({len(mine[0]) - Area.HEAD} bytes), so it is refused and "
+                  f"{kind.who} keeps its own. The projects restore as usual", file=out)
+            mine, refused = [], True
+        elif state:
             print(f"note: {area.what} in this file is not a working log, so it stays as it is on the FM-1", file=out)
             mine = []
     except BackupError as e:
         raise I.InstallError("badpkg", f"{path}: {e}")
-    if area and not mine:
+    if area and not mine and not refused:
         print(f"note: this file holds no {area.what}: {kind.who} keeps its own, and nothing newer than this backup "
               "attaches to the restored projects", file=out)
     if others:

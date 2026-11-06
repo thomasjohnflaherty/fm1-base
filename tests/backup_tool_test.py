@@ -164,8 +164,8 @@ class FakeFM1:
 
 
 class FakeArea:
-    """a firmware's flash area (fm1_backup.py class Area; Hapax port/hapax/pat.c): 21 sectors, the window after a yes, the mark"""
-    N, S = 21, 4096
+    """a firmware's flash area (fm1_backup.py class Area; Hapax port/hapax/pat.c): 19 sectors, the window after a yes, the mark"""
+    N, S = 19, 4096
 
     def __init__(self, cmd, raw, state=0, window=True, saves=0):
         self.cmd, self.raw, self.state, self.window, self.saves = cmd, bytearray(raw), state, window, saves
@@ -208,9 +208,9 @@ class FakeArea:
 
 
 def fake_log():
-    """a log image: sectors 3, 4 and 5 hold a head with seq 24, 25, 26; the rest is blank"""
+    """a log image: sectors 3, 4 and 5 hold a head with seq 22, 23, 24; the rest is blank"""
     raw = bytearray(b"\xff" * (FakeArea.N * FakeArea.S))
-    for s, seq in ((3, 24), (4, 25), (5, 26)):
+    for s, seq in ((3, 22), (4, 23), (5, 24)):
         head = b"PLG1" + struct.pack("<III", 7, seq, 0)
         raw[s * FakeArea.S:s * FakeArea.S + 20] = head + struct.pack("<I", zlib.crc32(head))
         raw[s * FakeArea.S + 40:s * FakeArea.S + 60] = bytes(range(s, s + 20))
@@ -373,6 +373,16 @@ def main(img_path):
     dev = FakeFM1(other)
     dev.area = FakeArea(0x60, raw)
     ok(run(["restore", path + "f", "--yes"], dev) == 0 and bytes(dev.area.raw) == raw, "area: foreign bytes in a file are not written back")
+    # an area of an old size: refused with a message, and the objects restore
+    area.old = (21 * FakeArea.S,)
+    wide = b"\xff" * (21 * FakeArea.S)
+    with open(path + "o", "wb") as f:
+        f.write(B.join(img, [("PLOG", struct.pack("<BbHI", 1, 0, 0, len(wide)) + wide)]))
+    dev = FakeFM1(other)
+    dev.area = FakeArea(0x60, raw)
+    ok(run(["restore", path + "o", "--yes"], dev) == 0, "area: an old size: the restore runs")
+    ok(dev.image == img and bytes(dev.area.raw) == raw and dev.area.ended == 0, "area: an old size: the objects restore, the area stays")
+    area.old = ()
     # a section that the firmware will refuse: found before any object goes
     full = bytearray(raw)
     for s in range(FakeArea.N):

@@ -277,10 +277,10 @@ const resealed = (b) => {                                      // its CRCs right
 }
 // ---------------------------------------------------------------- 3. a flash area as a section (fm1_backup.py class Area)
 {
-  const N = 21, S = 4096, raw = new Uint8Array(N * S).fill(0xFF);
+  const N = 19, S = 4096, raw = new Uint8Array(N * S).fill(0xFF);
   const u32 = (b, o) => (b[o] | b[o + 1] << 8 | b[o + 2] << 16 | b[o + 3] << 24) >>> 0, le = (v) => [v & 255, v >>> 8 & 255, v >>> 16 & 255, v >>> 24];
   const head = (id, seq) => { const h = [0x50, 0x4C, 0x47, 0x31, id, 0, 0, 0, seq, 0, 0, 0, 0, 0, 0, 0]; return [...h, ...le(PB.crc32(Uint8Array.from(h)))]; };
-  [[3, 24], [4, 25], [5, 26]].forEach(([s, seq]) => { raw.set(head(7, seq), s * S); raw.fill(s, s * S + 40, s * S + 60); });
+  [[3, 22], [4, 23], [5, 24]].forEach(([s, seq]) => { raw.set(head(7, seq), s * S); raw.fill(s, s * S + 40, s * S + 60); });
   const fake = (flash, window, saves = 0) => {
     const q = [], out = (b) => { let s = 0; for (const v of b) s += v; q.push([0xF0, ...PB.pack7([0, 0x59, 0x60, b.length & 255, b.length >> 8, 0, ...b, ~s & 255]), 0xF7]); };
     let mark = null;
@@ -320,6 +320,10 @@ const resealed = (b) => {                                      // its CRCs right
   const keep = fake(Uint8Array.from(raw), true);
   await ex.restore(keep, foreign, none);
   check(same(keep.flash, raw) && keep.ended === 0 && /no working/.test(ex.check(foreign)), "area: foreign bytes in a file are not written back");
+  const wide = new Uint8Array(8 + (N + 2) * S).fill(255); wide.set(data.subarray(0, 8)); wide.set([...new Uint8Array(new Uint32Array([(N + 2) * S]).buffer)], 4);
+  const narrow = PB.area("PLOG", "the log", 0x60, N * S, [(N + 2) * S]), kept = fake(Uint8Array.from(raw), true);
+  await narrow.restore(kept, wide, none);
+  check(same(kept.flash, raw) && kept.ended === 0 && /old size/.test(narrow.check(wide)), "area: an old size: refused with a message, the area stays");
 }
 console.log(fails ? `backup page test FAILED (${fails})` : "backup page test passed");
 process.exit(fails ? 1 : 0);
