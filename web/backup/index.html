@@ -15,7 +15,9 @@
      check(bytes) -> a phrase on what it holds (throws on a bad one), restore(link, bytes, onProgress(0..1))
      (throws on failure)}; link: send(bytes), read(ms) -> a SysEx message or null, drain(), lost. In the file, after
      the backup's own CRC, each section: its tag, u32 length, the bytes, u32 CRC-32 of the bytes (fm1_backup.py
-     split). A restore puts the backup back first, then, once the FM-1 said yes, each section the page knows. -->
+     split). A restore puts the backup back first, then, once the FM-1 said yes, each section the page knows.
+     PB.area(tag, what, cmd) is such an object for a flash area over the firmware's command: fm1_backup.py class Area.
+     Its backup gives null when the firmware has no such area: the file then has no section. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -387,9 +389,80 @@ const PB = (() => {
     }
   }
 
+  // a firmware's flash area as a section (fm1_backup.py class Area, its wire and its section)
+  function area(tag, what, cmd) {
+    const INFO = 0, READ = 1, BEGIN = 2, WRITE = 3, END = 4, SECTOR = 4096, READ_MAX = 128, WRITE_MAX = 256, SHEAD = 8, ERASE = 20000;
+    const STATUS = { 1: "a bad request", 2: "the time for it ended, or the firmware does not allow it", 3: "a flash area that the firmware does not own yet",
+                     4: "a flash write", 5: "the area's check", 6: "the area does not mount" };
+    const i8 = (v) => (v << 24) >> 24;
+    async function call(link, body, wait = DELAY.hs) {
+      link.send(frame(cmd, body));
+      const end = Date.now() + wait;
+      while (Date.now() < end) {
+        const p = await link.read(Math.min(DELAY.poll, Math.max(end - Date.now(), 0)));
+        const f = p ? parseFrame(p) : null;
+        if (f && f.cmd === cmd && f.body[0] === body[0]) return f.body;
+        if (link.lost) break;
+      }
+      return null;
+    }
+    const state = (data) => {
+      if (data.length < SHEAD || data[0] !== 1 || u32(data, 4) !== data.length - SHEAD) throw fail("file", `This backup is damaged (its section ${tag}).`);
+      return i8(data[1]);
+    };
+    function blank(raw) {
+      const n = raw.length / SECTOR, free = [];
+      let top = -1, seq = -1;
+      for (let s = 0; s < n; s++) {
+        const at = s * SECTOR;
+        if (raw.subarray(at, at + SECTOR).every((b) => b === 0xFF)) free.push(s);
+        else if (raw[at + 1] === 0x4C && raw[at + 2] === 0x47 && u32(raw, at + 8) > seq) { seq = u32(raw, at + 8); top = s; }
+      }
+      if (!free.length) throw fail("file", `This backup has no blank sector in its section ${tag}.`);
+      const after = top < 0 ? free[0] : (top + 1) % n;
+      return free.includes(after) ? after : free[0];
+    }
+    return {
+      tag, what,
+      async backup(link, onProgress) {
+        const info = await call(link, [INFO]);
+        if (!info || info.length < 12) return null;
+        const size = u32(info, 4), out = new Uint8Array(SHEAD + size);
+        if (u32(info, 8)) throw fail("changed", `${NAME} saved during the backup. Stop it, then back up again.`);
+        out[0] = 1; out[1] = info[2]; out.set(le32(size), 4);
+        for (let at = 0; at < size;) {
+          const n = Math.min(READ_MAX, size - at), r = await call(link, [READ, ...le32(at), n & 0xFF, n >> 8]);
+          if (!r || r[1] || r.length !== 12 + n || u32(r, 8) !== at) throw fail("lost", `A piece of ${what} went missing. Back up again.`);
+          if (u32(r, 4)) throw fail("changed", `${NAME} saved during the backup. Stop it, then back up again.`);
+          out.set(r.slice(12), SHEAD + at);
+          at += n;
+          onProgress(at / size);
+        }
+        return out;
+      },
+      check(data) { return state(data) === 0 ? what : `no working ${what}`; },
+      async restore(link, data, onProgress) {
+        if (state(data) !== 0) return;
+        const raw = data.subarray(SHEAD), z = blank(raw);
+        const step = async (body, wait) => {
+          const r = await call(link, body, wait);
+          if (!r || r.length < 2) throw fail("lost", "No answer.");
+          if (r[1]) throw fail("badreq", `There was a problem with ${STATUS[r[1]] || "status " + r[1]}.`);
+        };
+        await step([BEGIN, ...le32(raw.length), z], ERASE);
+        for (let at = 0; at < raw.length; at += WRITE_MAX) {
+          const piece = raw.subarray(at, at + WRITE_MAX);
+          if (Math.floor(at / SECTOR) !== z && !piece.every((b) => b === 0xFF)) await step([WRITE, ...le32(at), ...piece]);
+          onProgress((at + piece.length) / raw.length);
+        }
+        await step([END, ...le32(crc32(raw))], ERASE);
+      },
+    };
+  }
+
   return { HS_QUERY, RS_REQ, BU_REQ, BU_END, OK_ADDR, ASK_ADDR, FAIL_ADDR, VERSION, PLAYING, DECLINED, ID, NAME, MAGIC, DELAY, ERRORS,
            pack7, unpack7, crc32, frame, parseFrame, response, parseRequest, parseIdentity, parse, split, join, summary, find, others, backup,
-           restore };
+           restore, area };
 })();
 // --- backup protocol: end
 
@@ -512,7 +585,7 @@ $("backup").addEventListener("click", async () => {
       lastPct = -100;
       progress(0);
       const data = await ex.backup(dev.link, (f) => { sayProgress(`Receiving ${esc(ex.what)}: ${Math.floor(f * 100)} percent`, Math.floor(f * 100)); progress(f * 100); });
-      sections.push({ tag: ex.tag, data, ex });
+      if (data) sections.push({ tag: ex.tag, data, ex });
     }
     const file = PB.join(image, sections);
     const d = new Date(), pad = (v) => String(v).padStart(2, "0");

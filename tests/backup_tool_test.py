@@ -64,6 +64,7 @@ class FakeFM1:
         self.stall_after, self.flags, self.port = stall_after, flags, port
         self.magic, self.version, self.nobj = image[:4], *struct.unpack_from("<HH", image, 4)
         self.req, self.asked, self.pull, self.wanted, self.reads, self.backups = None, 0, None, None, 0, 0
+        self.area = None
 
     def input_names(self):
         return [self.port]
@@ -140,6 +141,9 @@ class FakeFM1:
             link.q.put(b"\xF0" + I.pack7(bytes([0, 0x59, 0x11, 0, 0, 0]) + t + bytes(28 - len(t))) + b"\xF7")
             return
         f = B.parse_frame(d)
+        if f and self.area and f[0] == self.area.cmd:
+            self.area.rx(link, f[1])
+            return
         if f and f[0] == B.BU_REQ and f[1] == self.magic:   # (main_fm1.c: only its app's magic)
             self.stream(link)
             return
@@ -157,6 +161,59 @@ class FakeFM1:
             if self.stall_after is not None and self.reads > self.stall_after:
                 return                            # (stops asking)
             self.next(link, bytes(u[14:14 + n]))
+
+
+class FakeArea:
+    """a firmware's flash area (fm1_backup.py class Area; Hapax port/hapax/pat.c): 21 sectors, the window after a yes, the mark"""
+    N, S = 21, 4096
+
+    def __init__(self, cmd, raw, state=0, window=True, saves=0):
+        self.cmd, self.raw, self.state, self.window, self.saves = cmd, bytearray(raw), state, window, saves
+        self.marked, self.ended = None, 0
+
+    def send(self, link, body):
+        link.q.put(dev_frame(self.cmd, bytes(body)))
+
+    def rx(self, link, b):
+        op = b[0]
+        if op == 0:
+            self.send(link, struct.pack("<BBbBII", 0, 0, self.state, self.window, len(self.raw), self.saves) + bytes(12))
+            if self.saves:
+                self.saves -= 1
+        elif op == 1:
+            off, n = struct.unpack_from("<IH", b, 1)
+            self.send(link, struct.pack("<BBHII", 1, 0, n, 0, off) + bytes(self.raw[off:off + n]))
+        elif op == 2:
+            size, z = struct.unpack_from("<IB", b, 1)
+            if not self.window:
+                self.send(link, [2, 2])
+                return
+            self.marked = z
+            self.raw[:] = b"\xff" * len(self.raw)
+            self.raw[z * self.S:z * self.S + 4] = b"@LG1"
+            self.send(link, [2, 0])
+        elif op == 3:
+            off = struct.unpack_from("<I", b, 1)[0]
+            self.raw[off:off + len(b) - 5] = b[5:]
+            self.send(link, [3, 0])
+        elif op == 4:
+            c = bytearray(self.raw)
+            c[self.marked * self.S:(self.marked + 1) * self.S] = b"\xff" * self.S
+            if zlib.crc32(c) != struct.unpack_from("<I", b, 1)[0]:
+                self.send(link, [4, 5])
+                return
+            self.raw[:] = c
+            self.marked, self.ended = None, self.ended + 1
+            self.send(link, [4, 0])
+
+
+def fake_log():
+    """a log image: sectors 3, 4 and 5 hold a head with seq 24, 25, 26; the rest is blank"""
+    raw = bytearray(b"\xff" * (FakeArea.N * FakeArea.S))
+    for s, seq in ((3, 24), (4, 25), (5, 26)):
+        raw[s * FakeArea.S:s * FakeArea.S + 12] = b"PLG1" + struct.pack("<II", 7, seq)
+        raw[s * FakeArea.S + 40:s * FakeArea.S + 60] = bytes(range(s, s + 20))
+    return bytes(raw)
 
 
 def fast():
@@ -280,6 +337,42 @@ def main(img_path):
     except B.BackupError as e:
         said = str(e)
     ok(said == "not a Template backup", "a Kind: another magic: " + said)
+    # a firmware's flash area: a section through the firmware's own command
+    B.AREAS[b"TSTB"] = area = B.Area("PLOG", "the log", 0x60)
+    area.WAIT.update(answer=0.1, erase=0.2)
+    raw = fake_log()
+    dev = FakeFM1(img)
+    dev.area = FakeArea(0x60, raw)
+    ok(run(["backup", path + "a", "--magic", "TSTB"], dev) == 0, "area: backup")
+    data = open(path + "a", "rb").read()
+    image, sections = B.split(data)
+    ok(image == img and len(sections) == 1 and sections[0][0] == "PLOG" and sections[0][1][8:] == raw, "area: the file holds the raw area")
+    ok(area.blank(raw) == 6, "area: the mark goes on the sector after the newest")
+    dev = FakeFM1(other)
+    dev.area = FakeArea(0x60, b"\x55" * len(raw))
+    ok(run(["restore", path + "a", "--yes"], dev) == 0 and bytes(dev.area.raw) == raw and dev.area.ended == 1, "area: a restore writes it back")
+    dev = FakeFM1(img)
+    dev.area = FakeArea(0x60, raw, saves=1)
+    ok(run(["backup", path + "b", "--magic", "TSTB"], dev) == 0 and dev.backups == 2, "area: a save during the backup takes it again")
+    dev = FakeFM1(img)
+    dev.area = FakeArea(0x60, raw, saves=9)
+    ok(run(["backup", path + "b2", "--magic", "TSTB"], dev) != 0 and dev.backups == 3, "area: a firmware that keeps saving: no file")
+    dev = FakeFM1(img)
+    ok(run(["backup", path + "c", "--magic", "TSTB"], dev) == 0 and open(path + "c", "rb").read() == img, "area: a firmware with no area: no section")
+    dev = FakeFM1(other)
+    dev.area = FakeArea(0x60, raw)
+    keep = bytes(dev.area.raw)
+    ok(run(["restore", path + "c", "--yes"], dev) == 0 and dev.image == img and bytes(dev.area.raw) == keep, "area: an old backup restores, the area stays")
+    dev = FakeFM1(other)
+    dev.area = FakeArea(0x60, b"\x55" * len(raw), window=False)
+    ok(run(["restore", path + "a", "--yes"], dev) != 0 and dev.area.raw == bytearray(b"\x55" * len(raw)), "area: the firmware refuses: an error, nothing written")
+    foreign = B.join(img, [("PLOG", struct.pack("<BbHI", 1, -3, 0, len(raw)) + b"\x55" * len(raw))])
+    with open(path + "f", "wb") as f:
+        f.write(foreign)
+    dev = FakeFM1(other)
+    dev.area = FakeArea(0x60, raw)
+    ok(run(["restore", path + "f", "--yes"], dev) == 0 and bytes(dev.area.raw) == raw, "area: foreign bytes in a file are not written back")
+    del B.AREAS[b"TSTB"]
     shutil.rmtree(tmp)
     print("backup tool test %s" % ("FAILED" if failed else "passed"))
     return 1 if failed else 0

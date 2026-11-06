@@ -22,8 +22,13 @@ The file (little-endian): the magic, u16 version, u16 count, u32 flags (bit 0: t
 those 12 bytes; each object: u16 id, u16 length, u32 CRC-32, the payload; u32 CRC-32 of everything before.
 After that a file may carry the firmware's own sections, which the web backup page reads and writes over the
 firmware's own SysEx (web/backup/index.html EXTRAS: LOOM-8's samples): each a 4-letter tag, u32 length, the bytes,
-u32 CRC-32 of the bytes. This tool restores the backup itself and leaves the sections alone (split, the firmware's
+u32 CRC-32 of the bytes. This tool restores the backup itself and leaves other sections alone (split, the firmware's
 own tool for them); info lists them.
+
+A firmware in AREAS keeps a flash area outside the store (Hapax: the pattern log). Its section holds the raw area, read
+and written over the firmware's own command (app.h APP_USB_CMD, class Area). A backup reads it after the objects; a
+firmware that does not answer gets no section. A restore writes it after the FM-1 said yes. A backup with no section
+still restores, and then the area stays as it is.
 
 As a library (a firmware's own tool: Polly's polly_backup.py): Kind(magic, version, objs, names, identity, name),
 then parse / build / find / backup / restore / main with kind=.
@@ -78,6 +83,103 @@ class Kind:
         used = sum(1 for _, d in objs if d)
         return f"{sum(len(d) for _, d in objs)} bytes: {used} of {len(objs)} parts hold something"
 
+
+class AreaError(Exception):
+    pass
+
+
+class Area:
+    """a flash area of a firmware, as a section. cmd: the firmware's command, in the update's framing. Its body: u8 op.
+    INFO: the answer op, status, i8 state, u8 window, u32 size, u32 changes, then the firmware's own u32 measures.
+    READ u32 off, u16 n: op, status, u16 n, u32 changes, u32 off, the bytes. BEGIN u32 size, u8 sector: a sector that is
+    blank in the data; the firmware marks it, erases the rest, and from here until END nothing of the area loads.
+    WRITE u32 off, the bytes. END u32 CRC-32 of the data: the firmware checks it, erases the marked sector and reloads.
+    changes: what the firmware wrote since the backup's stream ended; not 0, the section does not fit the backup.
+    window: 1 for a while after the owner said yes to a restore: only then BEGIN works.
+    The section: u8 format 1, i8 state, u16 0, u32 size, the raw area. Only state 0 is written back."""
+    INFO, READ, BEGIN, WRITE, END = range(5)
+    SECTOR, READ_MAX, WRITE_MAX, HEAD, TRIES = 4096, 128, 256, 8, 3
+    WAIT = {"answer": 1.0, "erase": 20.0}
+    STATUS = {1: "a bad request", 2: "the time for it ended, or the firmware does not allow it",
+              3: "a flash area that the firmware does not own yet", 4: "a flash write", 5: "the area's CRC-32",
+              6: "the area does not mount"}
+
+    def __init__(self, tag, what, cmd):
+        self.tag, self.what, self.cmd = tag, what, cmd
+
+    def call(self, link, body, wait=None):
+        link.send(frame(self.cmd, bytes(body)))
+        end = time.monotonic() + (wait or self.WAIT["answer"])
+        while time.monotonic() < end:
+            pkt = link.read(min(DELAY["poll"], max(end - time.monotonic(), 0)))
+            f = parse_frame(pkt) if pkt else None
+            if f and f[0] == self.cmd and f[1] and f[1][0] == body[0]:
+                return f[1]
+            if link.lost:
+                break
+        return None
+
+    def read(self, link, out):
+        """the section's bytes; None when the firmware has no such area; AreaError when the firmware saved meanwhile"""
+        info = self.call(link, bytes([self.INFO]))
+        if not info or len(info) < 12:
+            return None
+        state, size = struct.unpack_from("<bxI", info, 2)
+        changes = struct.unpack_from("<I", info, 8)[0]
+        if changes:
+            raise AreaError("changed")
+        got = bytearray()
+        while len(got) < size:
+            n = min(self.READ_MAX, size - len(got))
+            r = self.call(link, bytes([self.READ]) + struct.pack("<IH", len(got), n))
+            if not r or r[1] or len(r) != 12 + n or struct.unpack_from("<I", r, 8)[0] != len(got):
+                raise I.InstallError("lost", f"{self.what}: a piece went missing at {len(got)}: run this again")
+            if struct.unpack_from("<I", r, 4)[0]:
+                raise AreaError("changed")
+            got += r[12:]
+            print(f"\rreceiving {self.what}: {len(got) * 100 // size:3d}%\033[K", end="", file=out, flush=True)
+        print(file=out)
+        return struct.pack("<BbHI", 1, state, 0, size) + bytes(got)
+
+    def state(self, data):
+        if len(data) < self.HEAD or data[0] != 1 or struct.unpack_from("<I", data, 4)[0] != len(data) - self.HEAD:
+            raise BackupError(f"its section {self.tag} is not one this tool knows")
+        return struct.unpack_from("<b", data, 1)[0]
+
+    def blank(self, raw):
+        """the sector to mark: blank in the data, the one after the newest sector when it can be (a cut in the last erase then leaves a whole log)"""
+        n = len(raw) // self.SECTOR
+        heads = [(struct.unpack_from("<I", raw, s * self.SECTOR + 8)[0], s) for s in range(n)
+                 if raw[s * self.SECTOR + 1:s * self.SECTOR + 3] == b"LG"]
+        free = [s for s in range(n) if raw[s * self.SECTOR:(s + 1) * self.SECTOR] == b"\xff" * self.SECTOR]
+        if not free:
+            raise BackupError(f"its section {self.tag} has no blank sector")
+        after = (max(heads)[1] + 1) % n if heads else free[0]
+        return after if after in free else free[0]
+
+    def restore(self, link, data, out):
+        raw = data[self.HEAD:]
+        z = self.blank(raw)
+
+        def step(body, what, wait=None):
+            r = self.call(link, body, wait)
+            if not r or len(r) < 2:
+                raise I.InstallError("lost", f"{self.what}: no answer ({what}): restore again")
+            if r[1]:
+                raise I.InstallError("badreq", f"{self.what}: {self.STATUS.get(r[1], 'status %d' % r[1])} ({what}): restore again")
+
+        step(bytes([self.BEGIN]) + struct.pack("<IB", len(raw), z), "the start", self.WAIT["erase"])
+        for at in range(0, len(raw), self.WRITE_MAX):
+            piece = raw[at:at + self.WRITE_MAX]
+            if at // self.SECTOR != z and piece != b"\xff" * len(piece):
+                step(bytes([self.WRITE]) + struct.pack("<I", at) + piece, "a write")
+            print(f"\rsending {self.what}: {(at + len(piece)) * 100 // len(raw):3d}%\033[K", end="", file=out, flush=True)
+        print(file=out)
+        step(bytes([self.END]) + struct.pack("<I", zlib.crc32(raw)), "the end", self.WAIT["erase"])
+
+
+# firmwares with a flash area: the backup's magic -> Area (fm1.toml backup_area, for the web page)
+AREAS = {b"HXPB": Area("PLOG", "the pattern log", 0x60)}
 
 ANY = Kind()
 # firmwares whose magic need not be given (--magic): an identity prefix -> (magic, name)
@@ -267,10 +369,23 @@ def backup(backend, path, port=None, out=sys.stdout, kind=ANY, magic=None):
             raise I.InstallError("usage", f"{dev.id.text}: give its app's backup magic, --magic XXXX (app.h "
                                  "APP_BACKUP_MAGIC, four letters)")
         magic = k[0]
+    area, sections = AREAS.get(magic), []
     try:
-        dev.link.drain()
-        dev.link.send(frame(BU_REQ, magic))
-        image = receive(dev.link, out, kind)
+        for attempt in range(Area.TRIES):
+            dev.link.drain()
+            dev.link.send(frame(BU_REQ, magic))
+            image = receive(dev.link, out, kind)
+            try:
+                section = area.read(dev.link, out) if area else None
+            except AreaError:
+                print(f"note: {kind.who} saved during the backup: taking it again", file=out)
+                continue
+            sections = [(area.tag, section)] if section else []
+            if area and not section:
+                print(f"note: {kind.who} has no {area.what} to back up", file=out)
+            break
+        else:
+            raise I.InstallError("stopped", f"{kind.who} keeps saving: stop it, then run this again")
     finally:
         dev.link.close()
     try:
@@ -280,7 +395,7 @@ def backup(backend, path, port=None, out=sys.stdout, kind=ANY, magic=None):
     except BackupError as e:
         raise I.InstallError("lost", f"the backup arrived damaged ({e}): run this again")
     with open(path, "wb") as f:
-        f.write(image)
+        f.write(join(image, sections))
     print(f"done: {path}  ({kind.summary(objs)})", file=out)
     if flags & 1:
         print(f"note: {kind.who} was playing, so changes it had not saved yet are not in it (stop, then back up "
@@ -345,9 +460,23 @@ def restore(backend, path, port=None, yes=False, ask=I.ask_tty, out=sys.stdout, 
     except BackupError as e:
         raise I.InstallError("badpkg", f"{path}: {e}")
     print(f"backup: {kind.summary(objs)}", file=out)
-    if sections:
-        print(f"note: its section{'s' if len(sections) > 1 else ''} {', '.join(t for t, _ in sections)} "
-              f"({sum(len(b) for _, b in sections)} bytes) {'are' if len(sections) > 1 else 'is'} not restored by "
+    area = AREAS.get(magic_of(image))
+    mine = [b for t, b in sections if area and t == area.tag]
+    others = [(t, b) for t, b in sections if not (area and t == area.tag)]
+    try:
+        if mine and area.state(mine[0]) != 0:
+            print(f"note: {area.what} in this file is not a working log, so it stays as it is on the FM-1", file=out)
+            mine = []
+        if mine:
+            area.blank(mine[0][area.HEAD:])
+    except BackupError as e:
+        raise I.InstallError("badpkg", f"{path}: {e}")
+    if area and not mine:
+        print(f"note: this file holds no {area.what}: {kind.who} keeps its own, and nothing newer than this backup "
+              "attaches to the restored projects", file=out)
+    if others:
+        print(f"note: its section{'s' if len(others) > 1 else ''} {', '.join(t for t, _ in others)} "
+              f"({sum(len(b) for _, b in others)} bytes) {'are' if len(others) > 1 else 'is'} not restored by "
               "this tool: the web backup page restores them, or the firmware's own tool", file=out)
     dev = find(backend, port, kind)
     print(f"device: {dev.id.text}  ({dev.name})", file=out)
@@ -364,6 +493,9 @@ def restore(backend, path, port=None, yes=False, ask=I.ask_tty, out=sys.stdout, 
         dev.link.drain()
         dev.link.send(frame(RS_REQ, struct.pack("<II", len(image), zlib.crc32(image))))
         code = serve(dev.link, image, out, kind)
+        if not code and mine:
+            print(file=out)
+            area.restore(dev.link, mine[0], out)
     finally:
         print(file=out)
         dev.link.close()

@@ -275,5 +275,42 @@ const resealed = (b) => {                                      // its CRCs right
   const code = await PB.restore((await connect(dev)).link, PB.split(withsec).image);
   check(code === 0 && same(dev.image, img), "restore of the backup split from a file with sections");
 }
+// ---------------------------------------------------------------- 3. a flash area as a section (fm1_backup.py class Area)
+{
+  const N = 21, S = 4096, raw = new Uint8Array(N * S).fill(0xFF);
+  [[3, 24], [4, 25], [5, 26]].forEach(([s, seq]) => { raw.set([0x50, 0x4C, 0x47, 0x31, 7, 0, 0, 0, seq, 0, 0, 0], s * S); raw.fill(s, s * S + 40, s * S + 60); });
+  const u32 = (b, o) => (b[o] | b[o + 1] << 8 | b[o + 2] << 16 | b[o + 3] << 24) >>> 0, le = (v) => [v & 255, v >>> 8 & 255, v >>> 16 & 255, v >>> 24];
+  const fake = (flash, window, saves = 0) => {
+    const q = [], out = (b) => { let s = 0; for (const v of b) s += v; q.push([0xF0, ...PB.pack7([0, 0x59, 0x60, b.length & 255, b.length >> 8, 0, ...b, ~s & 255]), 0xF7]); };
+    let mark = null;
+    return { flash, q, lost: false, ended: 0, async read() { return q.shift() || null; }, drain() {}, send(pkt) {
+      const f = PB.parseFrame(pkt), b = f.body;
+      if (f.cmd !== 0x60) return true;
+      if (b[0] === 0) out([0, 0, 0, window ? 1 : 0, ...le(flash.length), ...le(saves), ...new Array(12).fill(0)]);
+      if (b[0] === 1) { const off = u32(b, 1), n = b[5] | b[6] << 8; out([1, 0, n & 255, n >> 8, ...le(0), ...le(off), ...flash.subarray(off, off + n)]); }
+      if (b[0] === 2) { if (!window) { out([2, 2]); return true; } mark = b[5]; flash.fill(0xFF); flash.set([0x40, 0x4C, 0x47, 0x31], mark * S); out([2, 0]); }
+      if (b[0] === 3) { flash.set(b.slice(5), u32(b, 1)); out([3, 0]); }
+      if (b[0] === 4) { const c = Uint8Array.from(flash); c.fill(0xFF, mark * S, (mark + 1) * S); if (PB.crc32(c) !== u32(b, 1)) { out([4, 5]); return true; } flash.set(c); this.ended++; out([4, 0]); }
+      return true;
+    } };
+  };
+  const ex = PB.area("PLOG", "the log", 0x60), none = () => {};
+  const data = await ex.backup(fake(Uint8Array.from(raw), false), none);
+  check(data && same(data.subarray(8), raw) && data[0] === 1 && data[1] === 0 && ex.check(data) === "the log", "area: backup reads the raw area");
+  const dev = fake(new Uint8Array(N * S).fill(0x55), true);
+  await ex.restore(dev, data, none);
+  check(same(dev.flash, raw) && dev.ended === 1, "area: restore writes it back");
+  let e = null; const shut = fake(new Uint8Array(N * S).fill(0x55), false);
+  try { await ex.restore(shut, data, none); } catch (x) { e = x; }
+  check(e && e.code === "badreq" && shut.flash[0] === 0x55, "area: the firmware refuses: an error, nothing written");
+  e = null; try { await ex.backup(fake(Uint8Array.from(raw), false, 1), none); } catch (x) { e = x; }
+  check(e && e.code === "changed", "area: a save during the backup: an error, no file");
+  const noArea = { q: [], lost: false, async read() { return null; }, drain() {}, send() { return true; } };
+  check(await ex.backup(noArea, none) === null, "area: a firmware with no area: no section");
+  const foreign = Uint8Array.from(data); foreign[1] = 0xFD;
+  const keep = fake(Uint8Array.from(raw), true);
+  await ex.restore(keep, foreign, none);
+  check(same(keep.flash, raw) && keep.ended === 0 && /no working/.test(ex.check(foreign)), "area: foreign bytes in a file are not written back");
+}
 console.log(fails ? `backup page test FAILED (${fails})` : "backup page test passed");
 process.exit(fails ? 1 : 0);

@@ -62,6 +62,12 @@ def fill(html, values, what):
     return html
 
 
+def extras_js(conf):
+    """the page's sections: fm1.toml backup_area = {tag, what, cmd}, a flash area over the firmware's command (fm1_backup.py Area)"""
+    a = conf.get("backup_area")
+    return f"const EXTRAS = [PB.area({json.dumps(a['tag'])}, {json.dumps(a['what'])}, {int(a['cmd'])})];" if a else "const EXTRAS = [];"
+
+
 def backup_values(app, conf):
     """the backup page's values: the app's magic and version (app.h), the name, the identity, the files"""
     src = (Path(app) / "app.h").read_text(encoding="utf-8")
@@ -73,7 +79,7 @@ def backup_values(app, conf):
     name = conf.get("name", Path(app).name)
     return {"NAME": name, "ID": conf.get("id_prefix", ""), "MAGIC": magic, "BACKUP_VERSION": v.group(1),
             "EXT": conf.get("backup_ext", "bak"), "HOLDS": conf.get("backup_holds", f"everything {name} saves"),
-            "EXTRA": "", "EXTRAS_JS": "const EXTRAS = [];",
+            "EXTRA": "", "EXTRAS_JS": extras_js(conf),
             "TERMINAL": "You can also back up from a terminal. Run <code>python3 tools/fm1_backup.py</code> in fm1-base's "
                         "repository. It does the same, and makes the same files."}
 
