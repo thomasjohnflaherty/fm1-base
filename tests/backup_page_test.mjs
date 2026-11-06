@@ -278,8 +278,9 @@ const resealed = (b) => {                                      // its CRCs right
 // ---------------------------------------------------------------- 3. a flash area as a section (fm1_backup.py class Area)
 {
   const N = 21, S = 4096, raw = new Uint8Array(N * S).fill(0xFF);
-  [[3, 24], [4, 25], [5, 26]].forEach(([s, seq]) => { raw.set([0x50, 0x4C, 0x47, 0x31, 7, 0, 0, 0, seq, 0, 0, 0], s * S); raw.fill(s, s * S + 40, s * S + 60); });
   const u32 = (b, o) => (b[o] | b[o + 1] << 8 | b[o + 2] << 16 | b[o + 3] << 24) >>> 0, le = (v) => [v & 255, v >>> 8 & 255, v >>> 16 & 255, v >>> 24];
+  const head = (id, seq) => { const h = [0x50, 0x4C, 0x47, 0x31, id, 0, 0, 0, seq, 0, 0, 0, 0, 0, 0, 0]; return [...h, ...le(PB.crc32(Uint8Array.from(h)))]; };
+  [[3, 24], [4, 25], [5, 26]].forEach(([s, seq]) => { raw.set(head(7, seq), s * S); raw.fill(s, s * S + 40, s * S + 60); });
   const fake = (flash, window, saves = 0) => {
     const q = [], out = (b) => { let s = 0; for (const v of b) s += v; q.push([0xF0, ...PB.pack7([0, 0x59, 0x60, b.length & 255, b.length >> 8, 0, ...b, ~s & 255]), 0xF7]); };
     let mark = null;
@@ -294,7 +295,7 @@ const resealed = (b) => {                                      // its CRCs right
       return true;
     } };
   };
-  const ex = PB.area("PLOG", "the log", 0x60), none = () => {};
+  const ex = PB.area("PLOG", "the log", 0x60, N * S), none = () => {};
   const data = await ex.backup(fake(Uint8Array.from(raw), false), none);
   check(data && same(data.subarray(8), raw) && data[0] === 1 && data[1] === 0 && ex.check(data) === "the log", "area: backup reads the raw area");
   const dev = fake(new Uint8Array(N * S).fill(0x55), true);
@@ -307,6 +308,14 @@ const resealed = (b) => {                                      // its CRCs right
   check(e && e.code === "changed", "area: a save during the backup: an error, no file");
   const noArea = { q: [], lost: false, async read() { return null; }, drain() {}, send() { return true; } };
   check(await ex.backup(noArea, none) === null, "area: a firmware with no area: no section");
+  const section = (body) => { const d = new Uint8Array(8 + body.length); d[0] = 1; d.set(le(body.length), 4); d.set(body, 8); return d; };
+  const fullLog = Uint8Array.from(raw); for (let s = 0; s < N; s++) if (s < 3 || s > 5) fullLog.set(raw.subarray(3 * S, 4 * S), s * S);
+  const badHead = Uint8Array.from(raw); badHead[3 * S + 17] ^= 1;
+  const twoLogs = Uint8Array.from(raw); twoLogs.set(head(8, 25), 4 * S);
+  for (const [what, body] of [["another size", new Uint8Array(S).fill(255)], ["no blank sector", fullLog], ["a bad sector head", badHead], ["two logs", twoLogs], ["no log", new Uint8Array(N * S).fill(255)]]) {
+    let bad = null; try { ex.check(section(body)); } catch (x) { bad = x; }
+    check(bad && bad.code === "file", `area: ${what}: check refuses it when the file is picked`);
+  }
   const foreign = Uint8Array.from(data); foreign[1] = 0xFD;
   const keep = fake(Uint8Array.from(raw), true);
   await ex.restore(keep, foreign, none);

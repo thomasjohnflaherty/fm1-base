@@ -211,7 +211,8 @@ def fake_log():
     """a log image: sectors 3, 4 and 5 hold a head with seq 24, 25, 26; the rest is blank"""
     raw = bytearray(b"\xff" * (FakeArea.N * FakeArea.S))
     for s, seq in ((3, 24), (4, 25), (5, 26)):
-        raw[s * FakeArea.S:s * FakeArea.S + 12] = b"PLG1" + struct.pack("<II", 7, seq)
+        head = b"PLG1" + struct.pack("<III", 7, seq, 0)
+        raw[s * FakeArea.S:s * FakeArea.S + 20] = head + struct.pack("<I", zlib.crc32(head))
         raw[s * FakeArea.S + 40:s * FakeArea.S + 60] = bytes(range(s, s + 20))
     return bytes(raw)
 
@@ -338,7 +339,7 @@ def main(img_path):
         said = str(e)
     ok(said == "not a Template backup", "a Kind: another magic: " + said)
     # a firmware's flash area: a section through the firmware's own command
-    B.AREAS[b"TSTB"] = area = B.Area("PLOG", "the log", 0x60)
+    B.AREAS[b"TSTB"] = area = B.Area("PLOG", "the log", 0x60, FakeArea.N * FakeArea.S)
     area.WAIT.update(answer=0.1, erase=0.2)
     raw = fake_log()
     dev = FakeFM1(img)
@@ -372,6 +373,24 @@ def main(img_path):
     dev = FakeFM1(other)
     dev.area = FakeArea(0x60, raw)
     ok(run(["restore", path + "f", "--yes"], dev) == 0 and bytes(dev.area.raw) == raw, "area: foreign bytes in a file are not written back")
+    # a section that the firmware will refuse: found before any object goes
+    full = bytearray(raw)
+    for s in range(FakeArea.N):
+        if s not in (3, 4, 5):
+            full[s * FakeArea.S:(s + 1) * FakeArea.S] = raw[3 * FakeArea.S:4 * FakeArea.S]
+    bad_head = bytearray(raw)
+    bad_head[3 * FakeArea.S + 17] ^= 1
+    two_logs = bytearray(raw)
+    head = b"PLG1" + struct.pack("<III", 8, 25, 0)
+    two_logs[4 * FakeArea.S:4 * FakeArea.S + 20] = head + struct.pack("<I", zlib.crc32(head))
+    for what, body in (("another size", b"\xff" * 4096), ("no blank sector", bytes(full)), ("a bad sector head", bytes(bad_head)),
+                       ("two logs", bytes(two_logs)), ("no log", b"\xff" * len(raw))):
+        with open(path + "s", "wb") as f:
+            f.write(B.join(img, [("PLOG", struct.pack("<BbHI", 1, 0, 0, len(body)) + body)]))
+        dev = FakeFM1(other)
+        dev.area = FakeArea(0x60, b"\x55" * len(raw))
+        ok(run(["restore", path + "s", "--yes"], dev) != 0 and dev.req is None and dev.image == other and dev.area.raw == bytearray(b"\x55" * len(raw)),
+           "area: " + what + ": refused before any object goes")
     del B.AREAS[b"TSTB"]
     shutil.rmtree(tmp)
     print("backup tool test %s" % ("FAILED" if failed else "passed"))

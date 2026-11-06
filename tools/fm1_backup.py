@@ -104,8 +104,8 @@ class Area:
               3: "a flash area that the firmware does not own yet", 4: "a flash write", 5: "the area's CRC-32",
               6: "the area does not mount"}
 
-    def __init__(self, tag, what, cmd):
-        self.tag, self.what, self.cmd = tag, what, cmd
+    def __init__(self, tag, what, cmd, size):
+        self.tag, self.what, self.cmd, self.size = tag, what, cmd, size
 
     def call(self, link, body, wait=None):
         link.send(frame(self.cmd, bytes(body)))
@@ -146,6 +146,28 @@ class Area:
             raise BackupError(f"its section {self.tag} is not one this tool knows")
         return struct.unpack_from("<b", data, 1)[0]
 
+    def check(self, data):
+        """the section's state; BackupError on a section that the firmware will refuse: a restore checks this before any object goes"""
+        state = self.state(data)
+        if state:
+            return state
+        raw = data[self.HEAD:]
+        if len(raw) != self.size:
+            raise BackupError(f"its section {self.tag} has another size ({len(raw)} bytes, not {self.size})")
+        ids = set()
+        for s in range(len(raw) // self.SECTOR):
+            head = raw[s * self.SECTOR:s * self.SECTOR + 20]
+            if raw[s * self.SECTOR:(s + 1) * self.SECTOR] == b"\xff" * self.SECTOR:
+                continue
+            magic, log_id, seq, _, crc = struct.unpack("<4sIIII", head)
+            if magic not in (b"PLG1", b"PLGC") or crc != zlib.crc32(head[:16]) or seq % (self.size // self.SECTOR) != s:
+                raise BackupError(f"its section {self.tag} is damaged (sector {s})")
+            ids.add(log_id)
+        if len(ids) != 1:
+            raise BackupError(f"its section {self.tag} holds no one log")
+        self.blank(raw)
+        return state
+
     def blank(self, raw):
         """the sector to mark: blank in the data, the one after the newest sector when it can be (a cut in the last erase then leaves a whole log)"""
         n = len(raw) // self.SECTOR
@@ -179,7 +201,7 @@ class Area:
 
 
 # firmwares with a flash area: the backup's magic -> Area (fm1.toml backup_area, for the web page)
-AREAS = {b"HXPB": Area("PLOG", "the pattern log", 0x60)}
+AREAS = {b"HXPB": Area("PLOG", "the pattern log", 0x60, 21 * Area.SECTOR)}
 
 ANY = Kind()
 # firmwares whose magic need not be given (--magic): an identity prefix -> (magic, name)
@@ -464,11 +486,9 @@ def restore(backend, path, port=None, yes=False, ask=I.ask_tty, out=sys.stdout, 
     mine = [b for t, b in sections if area and t == area.tag]
     others = [(t, b) for t, b in sections if not (area and t == area.tag)]
     try:
-        if mine and area.state(mine[0]) != 0:
+        if mine and area.check(mine[0]) != 0:
             print(f"note: {area.what} in this file is not a working log, so it stays as it is on the FM-1", file=out)
             mine = []
-        if mine:
-            area.blank(mine[0][area.HEAD:])
     except BackupError as e:
         raise I.InstallError("badpkg", f"{path}: {e}")
     if area and not mine:

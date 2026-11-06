@@ -63,12 +63,12 @@ def fill(html, values, what):
 
 
 def extras_js(conf):
-    """the page's sections: fm1.toml backup_area = "TAG,CMD,what it is", a flash area over the firmware's command (fm1_backup.py Area)"""
+    """the page's sections: fm1.toml backup_area = "TAG,CMD,SIZE,what it is", a flash area over the firmware's command (fm1_backup.py Area)"""
     a = conf.get("backup_area")
     if not a:
         return "const EXTRAS = [];"
-    tag, cmd, what = a.split(",", 2)
-    return f"const EXTRAS = [PB.area({json.dumps(tag)}, {json.dumps(what)}, {int(cmd)})];"
+    tag, cmd, size, what = a.split(",", 3)
+    return f"const EXTRAS = [PB.area({json.dumps(tag)}, {json.dumps(what)}, {int(cmd)}, {int(size)})];"
 
 
 def backup_values(app, conf):
