@@ -52,8 +52,10 @@ RS_REQ, BU_REQ, BU_END = 0x41, 0x42, 0x43
 OK_ADDR, ASK_ADDR, FAIL_ADDR = 0xC0000000, 0xC1000000, 0xCF000000
 HEAD, REC, PAYLOAD_MAX = 16, 8, 3840
 PLAYING, DECLINED = 10, 11
-DELAY = {"poll": 0.5, "idle": 10.0, "ask": 75.0, "first": 3.0}
-EXIT = dict(I.EXIT, playing=5)
+DELAY = {"poll": 0.5, "idle": 10.0, "ask": 75.0, "first": 3.0,
+         "question": 60.0}   # the FM-1's own wait for SEL or HOME (device/unity.c rs_ask): no answer by then reports a no
+TIMEOUT = 0x100              # (not a firmware code: a no that came when the question ran out of time)
+EXIT = dict(I.EXIT, playing=5, timeout=7)
 
 
 class BackupError(Exception):
@@ -100,7 +102,7 @@ class Area:
     old: sizes that the area had in earlier firmware. Such a section is never written back: the objects of its file restore as usual."""
     INFO, READ, BEGIN, WRITE, END = range(5)
     SECTOR, READ_MAX, WRITE_MAX, HEAD, TRIES, OLD = 4096, 128, 256, 8, 3, -128
-    WAIT = {"answer": 1.0, "erase": 20.0}
+    WAIT = {"answer": 1.0, "erase": 20.0, "settle": 0.1}
     STATUS = {1: "a bad request", 2: "the time for it ended, or the firmware does not allow it",
               3: "a flash area that the firmware does not own yet", 4: "a flash write", 5: "the area's CRC-32",
               6: "the area does not mount"}
@@ -186,14 +188,22 @@ class Area:
         raw = data[self.HEAD:]
         z = self.blank(raw)
 
-        def step(body, what, wait=None):
-            r = self.call(link, body, wait)
+        def step(body, what, wait=None, tries=1):
+            r = None
+            for _ in range(tries):
+                r = self.call(link, body, wait)
+                if r:
+                    break
             if not r or len(r) < 2:
                 raise I.InstallError("lost", f"{self.what}: no answer ({what}): restore again")
             if r[1]:
                 raise I.InstallError("badreq", f"{self.what}: {self.STATUS.get(r[1], 'status %d' % r[1])} ({what}): restore again")
 
-        step(bytes([self.BEGIN]) + struct.pack("<IB", len(raw), z), "the start", self.WAIT["erase"])
+        # The FM-1 keeps one frame from the host at a time (felucca-bsp usb.c sx_frame): a frame that starts before it took the one
+        # before is lost. The answer to its last read (the restore's result) goes just before this, so BEGIN waits a moment, and is
+        # sent again if it gets no answer (BEGIN again is safe: the same mark, the same erases).
+        time.sleep(self.WAIT["settle"])
+        step(bytes([self.BEGIN]) + struct.pack("<IB", len(raw), z), "the start", self.WAIT["erase"], self.TRIES)
         for at in range(0, len(raw), self.WRITE_MAX):
             piece = raw[at:at + self.WRITE_MAX]
             if at // self.SECTOR != z and piece != b"\xff" * len(piece):
@@ -430,7 +440,7 @@ def backup(backend, path, port=None, out=sys.stdout, kind=ANY, magic=None):
 
 def serve(link, image, out, kind=ANY):
     """answer the FM-1's read requests until it reports; -> 0 restored, else its error code"""
-    last, idle, asked = time.monotonic(), DELAY["first"], 0
+    last, idle, asked, asked_at = time.monotonic(), DELAY["first"], 0, None
     while True:
         pkt = link.read(DELAY["poll"])
         if pkt is None:
@@ -447,6 +457,12 @@ def serve(link, image, out, kind=ANY):
         fl, addr, n = r
         last, idle, asked = time.monotonic(), DELAY["idle"], asked + 1
         if addr & 0xFF000000 in (OK_ADDR, FAIL_ADDR, ASK_ADDR):
+            if addr == ASK_ADDR:
+                asked_at = time.monotonic()
+            elif addr == FAIL_ADDR | DECLINED and asked_at is not None and \
+                    time.monotonic() - asked_at >= DELAY["question"] - DELAY["poll"]:
+                link.send(I.response(addr, b"success\0", fl))
+                return TIMEOUT                        # (the firmware says no for HOME and for its time out alike)
             link.send(I.response(addr, b"success\0", fl))
             if addr == ASK_ADDR:
                 print("\rreceived and checked. On the FM-1: RESTORE FROM USB? SEL yes, HOME no\033[K", file=out,
@@ -501,7 +517,7 @@ def restore(backend, path, port=None, yes=False, ask=I.ask_tty, out=sys.stdout, 
     except BackupError as e:
         raise I.InstallError("badpkg", f"{path}: {e}")
     if area and not mine and not refused:
-        print(f"note: this file holds no {area.what}: {kind.who} keeps its own, and nothing newer than this backup "
+        print(f"note: this file does not hold {area.what}: {kind.who} keeps its own, and nothing newer than this backup "
               "attaches to the restored projects", file=out)
     if others:
         print(f"note: its section{'s' if len(others) > 1 else ''} {', '.join(t for t, _ in others)} "
@@ -534,6 +550,10 @@ def restore(backend, path, port=None, yes=False, ask=I.ask_tty, out=sys.stdout, 
     if code == DECLINED:
         print("not restored: answered no on the FM-1. Nothing changed.", file=out)
         return 1
+    if code == TIMEOUT:
+        print(f"not restored: no answer on the FM-1 in {DELAY['question']:.0f} s (the question timed out). Nothing changed.",
+              file=out)
+        return EXIT["timeout"]
     if code:
         print(f"error: not restored: {errors(kind).get(code, 'code %d' % code)}." +
               ("" if code == 12 else " Nothing changed."), file=sys.stderr)

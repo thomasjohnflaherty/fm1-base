@@ -18,6 +18,7 @@ import shutil
 import struct
 import sys
 import tempfile
+import time
 import zlib
 from pathlib import Path
 
@@ -59,12 +60,12 @@ class FakeFM1:
     """an FM-1 whose app keeps image's objects: its magic, version and count are the image's (the app's own)"""
 
     def __init__(self, image, identity="FM-1_1100", playing=False, answer=True, stall_after=None, flags=0,
-                 port="TEMPLATE FM-1"):
-        self.image, self.identity, self.playing, self.answer = image, identity, playing, answer
+                 port="TEMPLATE FM-1", think=0.0):
+        self.image, self.identity, self.playing, self.answer, self.think = image, identity, playing, answer, think
         self.stall_after, self.flags, self.port = stall_after, flags, port
         self.magic, self.version, self.nobj = image[:4], *struct.unpack_from("<HH", image, 4)
         self.req, self.asked, self.pull, self.wanted, self.reads, self.backups = None, 0, None, None, 0, 0
-        self.area = None
+        self.area, self.last_rx = None, None
 
     def input_names(self):
         return [self.port]
@@ -116,6 +117,7 @@ class FakeFM1:
             return
         yield (B.ASK_ADDR, 8)
         self.asked += 1
+        time.sleep(self.think)                    # (the time until SEL or HOME; with answer False and long: rs_ask's time out)
         if not self.answer:
             yield (B.FAIL_ADDR | B.DECLINED, 8)
             return
@@ -142,8 +144,10 @@ class FakeFM1:
             return
         f = B.parse_frame(d)
         if f and self.area and f[0] == self.area.cmd:
+            self.area.prev = self.last_rx         # (when the frame before this one came: usb.c holds one frame at a time)
             self.area.rx(link, f[1])
             return
+        self.last_rx = time.monotonic()
         if f and f[0] == B.BU_REQ and f[1] == self.magic:   # (main_fm1.c: only its app's magic)
             self.stream(link)
             return
@@ -167,9 +171,10 @@ class FakeArea:
     """a firmware's flash area (fm1_backup.py class Area; Hapax port/hapax/pat.c): 19 sectors, the window after a yes, the mark"""
     N, S = 19, 4096
 
-    def __init__(self, cmd, raw, state=0, window=True, saves=0):
+    def __init__(self, cmd, raw, state=0, window=True, saves=0, busy=0.0):
         self.cmd, self.raw, self.state, self.window, self.saves = cmd, bytearray(raw), state, window, saves
         self.marked, self.ended = None, 0
+        self.busy, self.prev, self.begins, self.lost = busy, None, 0, 0   # busy: a frame this soon after the one before is lost
 
     def send(self, link, body):
         link.q.put(dev_frame(self.cmd, bytes(body)))
@@ -184,6 +189,11 @@ class FakeArea:
             off, n = struct.unpack_from("<IH", b, 1)
             self.send(link, struct.pack("<BBHII", 1, 0, n, 0, off) + bytes(self.raw[off:off + n]))
         elif op == 2:
+            if self.busy and self.prev is not None and time.monotonic() - self.prev < self.busy:
+                self.lost += 1                    # (the FM-1 had not taken the frame before: this one is dropped, no answer)
+                self.prev = None
+                return
+            self.begins += 1
             size, z = struct.unpack_from("<IB", b, 1)
             if not self.window:
                 self.send(link, [2, 2])
@@ -219,7 +229,7 @@ def fake_log():
 
 def fast():
     I.DELAY.update(open=0, hs=0.1, retry=0.02)
-    B.DELAY.update(poll=0.02, idle=0.3, ask=0.5, first=0.3)
+    B.DELAY.update(poll=0.02, idle=0.3, ask=0.5, first=0.3, question=0.3)
 
 
 def main(img_path):
@@ -292,8 +302,16 @@ def main(img_path):
     ok(run(["restore", path, "--yes"], dev) == B.EXIT["playing"] and dev.image == other,
        "playing: STOP FIRST (exit 5), nothing changed")
     dev = FakeFM1(other, answer=False)
-    ok(run(["restore", path, "--yes"], dev) == 1 and dev.image == other and dev.asked == 1,
-       "HOME on the FM-1: exit 1, nothing changed")
+    out = io.StringIO()
+    ok(run(["restore", path, "--yes"], dev, out=out) == 1 and dev.image == other and dev.asked == 1 and
+       "answered no" in out.getvalue(), "HOME on the FM-1: exit 1, nothing changed")
+    dev = FakeFM1(other, answer=False, think=B.DELAY["question"] + 0.05)
+    out = io.StringIO()
+    rc = run(["restore", path, "--yes"], dev, out=out)
+    ok(rc == 7 == B.EXIT.get("timeout") and dev.image == other and "timed out" in out.getvalue() and
+       "answered no" not in out.getvalue(), "no answer on the FM-1 in time: a time out (exit 7), not a no")
+    dev = FakeFM1(other, answer=False, think=B.DELAY["question"] / 4)
+    ok(run(["restore", path, "--yes"], dev) == 1, "HOME after a while, inside the time: still a no (exit 1)")
     bad = bytearray(img)
     bad[len(bad) // 2] ^= 1
     open(path + ".bad", "wb").write(bad)
@@ -352,6 +370,18 @@ def main(img_path):
     dev = FakeFM1(other)
     dev.area = FakeArea(0x60, b"\x55" * len(raw))
     ok(run(["restore", path + "a", "--yes"], dev) == 0 and bytes(dev.area.raw) == raw and dev.area.ended == 1, "area: a restore writes it back")
+    # u123: BEGIN right after the answer to the FM-1's last read was lost (usb.c keeps one frame; fm1-live loses the second of two in one ms)
+    dev = FakeFM1(other)
+    dev.area = FakeArea(0x60, b"\x55" * len(raw), busy=0.05)
+    ok(run(["restore", path + "a", "--yes"], dev) == 0 and bytes(dev.area.raw) == raw and dev.area.begins == 1 and not dev.area.lost,
+       "area: BEGIN waits until the FM-1 took the answer before it")
+    settle = area.WAIT.get("settle", 0)
+    area.WAIT["settle"] = 0
+    dev = FakeFM1(other)
+    dev.area = FakeArea(0x60, b"\x55" * len(raw), busy=0.05)
+    ok(run(["restore", path + "a", "--yes"], dev) == 0 and bytes(dev.area.raw) == raw and dev.area.lost == 1 and dev.area.begins == 1,
+       "area: a BEGIN lost all the same: sent again, the restore ends")
+    area.WAIT["settle"] = settle
     dev = FakeFM1(img)
     dev.area = FakeArea(0x60, raw, saves=1)
     ok(run(["backup", path + "b", "--magic", "TSTB"], dev) == 0 and dev.backups == 2, "area: a save during the backup takes it again")
