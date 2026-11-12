@@ -15,7 +15,7 @@ MEMORY
     XIP    (rx)  : ORIGIN = 0x02000120, LENGTH = 0x8DFBC
     RAMTEXT (rwx): ORIGIN = 0x01C00000, LENGTH = 0x8000
     RAM    (rwx) : ORIGIN = 0x01C08000, LENGTH = 96K
-    POOL   (rw)  : ORIGIN = 0x01C20000, LENGTH = 0x54000
+    POOL   (rw)  : ORIGIN = 0x01C20000, LENGTH = 0x52800
     NOINIT (rw)  : ORIGIN = 0x01C7C000, LENGTH = 0x3D50
 }
 SECTIONS
@@ -40,10 +40,11 @@ SECTIONS
     .bss (NOLOAD) : { _bss_start = .; *(.bss*) *(.sbss*) *(COMMON) *(.*_bss) *(.bd_base) . = ALIGN(4); _bss_end = .; } > RAM
     .pool (NOLOAD) : { _pool_start = .; *(.pool*) . = ALIGN(4); _pool_end = .; } > POOL
     .noinit (NOLOAD) : { *(.noinit*) } > NOINIT
-    /* Two stacks of 16,128 B each (they were 24,320 B for the main loop and 7,936 B for the interrupts). The interrupt stack holds
+    /* The main loop stack is 16,128 B and the interrupt stack 22,272 B (they were 24,320 B and 7,936 B). The interrupt stack holds
      * the audio render and, nested in it, the 1 kHz app tick: a Hapax port rack of 8 effects went over 7,936 B (fm1-hapax
-     * STACK-CRASH.md); the main loop used about 3.4 KB. */
-    _guard0 = 0x01C74000; _ustack_lo = 0x01C74100; _ustack_top = 0x01C78000;
-    _guard1 = 0x01C78000; _sstack_lo = 0x01C78100; _sstack_top = 0x01C7C000;
+     * STACK-CRASH.md); a rack of 12 needs 22,272 B (RACK-12-PLAN 2: +6,144 B from POOL, 62.3 % at the 12-deep worst case);
+     * the main loop used about 3.4 KB. POOL ends where the interrupt stack's guard band starts (0x01C72800). */
+    _guard0 = 0x01C72800; _ustack_lo = 0x01C72900; _ustack_top = 0x01C76800;
+    _guard1 = 0x01C76800; _sstack_lo = 0x01C76900; _sstack_top = 0x01C7C000;
     /DISCARD/ : { *(.comment) *(.note*) }
 }
