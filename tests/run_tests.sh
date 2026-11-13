@@ -25,6 +25,10 @@ run() {
 }
 run encoder sh -c "$CC -O2 -w -Ibsp/chip -Ibsp/boards/fm1 -o $OUT/encoder_test tests/encoder_test.c && $OUT/encoder_test"
 run trs sh -c "$CC -O2 -w -Ibsp/chip -Ibsp/boards/fm1 -Idevice -o $OUT/trs_test tests/trs_test.c && $OUT/trs_test"
+# the boot's flash gate (flash_ok): both 1 MiB parts (Puya 856014, UC25HQ80 B36014) and nothing else; the rescue
+# tool's chip gate the same
+run flash-id sh -c "$CC -std=c99 -Wall -Wextra -Werror -Ibsp/chip -o $OUT/flash_id_test bsp/tests/flash_id_test.c && $OUT/flash_id_test"
+run rescue-id "$PY" bsp/tests/rescue_id_test.py
 run storage sh -c "$CC -O2 -w -o $OUT/storage_test tests/storage_test.c && $OUT/storage_test"
 run fastmath sh -c "$CC -O2 -w -o $OUT/fastmath_test tests/fastmath_test.c -lm && $OUT/fastmath_test"
 run installer "$PY" tests/install_test.py
