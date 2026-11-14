@@ -36,6 +36,7 @@ SECTIONS
     .ram_text : { _rt_start = .; KEEP(*(.ram_text*)) *(.volatile_ram_code) *(*.rf.text.cache.L2.rf_trim)
                   . = ALIGN(4); _rt_end = .; } > RAMTEXT AT > XIP
     _rt_load = LOADADDR(.ram_text);
+    _rt_copy_end = _rt_end; _pt_start = _rt_end; _pt_end = _rt_end; _pt_load = _rt_load;   /* (no .pool_text: app.ld) */
     .data : { . = ALIGN(4); _data_start = .; *(.data*) *(.sdata*) *(.*_data) . = ALIGN(4); _data_end = .; } > RAM AT > XIP
     _data_load = LOADADDR(.data);
     /* keep the pool's layout as fm1-radio has it: the radio hardware writes somewhere in it (unfound), and moving the

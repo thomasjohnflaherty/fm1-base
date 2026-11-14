@@ -18,6 +18,8 @@ APP_DIR holds the app (app.h, app.c, its sources) and its fm1.toml:
   o2 = ["dsp/engine.c"]      separate units compiled at -O2 (the app's DSP), relative to APP_DIR (globs too); each with
                              its own directory on the include path
   o2_cflags = ["-DX=1"]      more flags for those; o2_include = ["lib/prefix.h"]: a header included first in each
+  far_calls = true           every call of the firmware's C code is a far one (-mllvm -pi32v2-large-program=true: 6 bytes
+                             a call, any distance: the unity build and the o2 units), so any of it may run from .pool_text
   include = ["dsp/lib"]      more include directories, relative to APP_DIR
   device_include = ["inc"]   include directories for the firmware only (headers the toolchain lacks)
   mmio_skip = ["dsp/lib/"]   paths whose numbers are not addresses (a library's tables): the register check skips
@@ -80,6 +82,11 @@ The second core's code that runs from RAM goes in section .c1_text: in .ram_text
 RAM code window), between _c1_start and _c1_end; the check that RAM code calls nothing in the flash leaves it out
 (core 1 runs only while core 0 waits for it in the audio interrupt, and core 0 turns the flash off only with
 interrupts off).
+Other app code that runs from RAM and calls into the flash goes in section .pool_text (at the pool's start, copied at boot,
+inside the guard's RAM code window; the pool headroom counts it): the flash is off only inside the flash driver, with
+interrupts off, so no other code runs then. RAM lies more than a direct call's reach (4 MB) from the flash, so its calls
+and its callers' calls must be far ones (far_calls = true); a near call to or from it fails the link ("relocation
+truncated to fit").
 Outputs in APP_DIR/build/: NAME.bin (app), loader/ota.bin (update loader), NAME.fwsc (package).
 
 The JieLi toolchain is Linux x86-64 only. JIELI_TOOLCHAIN points at it; on
@@ -562,6 +569,8 @@ def build_app():
         flags.append(f'-DAPP_VERSION="{VERSION}"')
     if CPU2:
         flags += ["-DFM1_CPU1=1", f"-DFM1B_BUILD={build_id():#010x}u", f"-DFM1_CPU1_FALLBACK={int(bool(CONF.get('cpu2_fallback')))}"]
+    if CONF.get("far_calls"):                      # every call a far one: code may run from .pool_text (see the top)
+        flags += ["-mllvm", "-pi32v2-large-program=true"]
     o2 = [f if f != "-Os" else "-O2" for f in flags]
     ir = CONF.get("ir_pass")                      # the app's pass over the IR (see the top)
     ir_out = ["-S", "-emit-llvm", "-Xclang", "-disable-llvm-optzns"] if ir else []
@@ -613,11 +622,12 @@ def build_app():
     ld = SRC / "device" / ("app_wifi.ld" if WIFI else "app.ld")
     tc("pi32v2/bin/ld", *lto, "--gc-sections", "-e", "_start", "-T", ld, *objs, *b_objs,
        *b_libs, "-o", elf)
-    for sect in ("text.bin", "data.bin", "ramtext.bin"):
+    for sect in ("text.bin", "data.bin", "ramtext.bin", "pooltext.bin"):
         (OUT / sect).unlink(missing_ok=True)
     *_, syms, dis, rt = tc_all(("common/bin/objcopy", "-O", "binary", "-j", ".text", elf, OUT / "text.bin"),
                                ("common/bin/objcopy", "-O", "binary", "-j", ".data", elf, OUT / "data.bin"),
                                ("common/bin/objcopy", "-O", "binary", "-j", ".ram_text", elf, OUT / "ramtext.bin"),
+                               ("common/bin/objcopy", "-O", "binary", "-j", ".pool_text", elf, OUT / "pooltext.bin"),
                                ("common/bin/objdump", "-t", elf),
                                ("common/bin/objdump", "-d", f"-mcpu={CPU}", elf),
                                ("common/bin/objdump", "-d", f"-mcpu={CPU}", "-j", ".ram_text", elf))
@@ -626,8 +636,8 @@ def build_app():
     def symv(name):
         return int(re.search(r"^([0-9a-f]+) .*\s" + name + r"$", syms, re.M).group(1), 16)
     img = bytearray((OUT / "text.bin").read_bytes())
-    # .ram_text and .data follow .text at their load addresses; crt0 copies them by words
-    for sect, lname in (("ramtext.bin", "_rt_load"), ("data.bin", "_data_load")):
+    # .ram_text, .data and .pool_text follow .text at their load addresses; crt0 copies them by words
+    for sect, lname in (("ramtext.bin", "_rt_load"), ("data.bin", "_data_load"), ("pooltext.bin", "_pt_load")):
         load = symv(lname)
         if load % 4:
             raise SystemExit(f"{lname} {load:#x} is not word aligned")
@@ -738,7 +748,7 @@ def check(img, syms, dis, rt):
         mm = re.search(r"^([0-9a-f]+) .*\s" + name + r"$", syms, re.M)
         return int(mm.group(1), 16) if mm else 0
     bss = sym("_bss_end") - 0x01C08000
-    pool = sym("_pool_end") - sym("_pool_start")
+    pool = sym("_pool_end") - (sym("_pt_start") or sym("_pool_start"))   # (.pool_text, at the pool's start, counts)
     ram, pool_max, spare = (128 * 1024, 0x4C000, 2048) if WIFI else (96 * 1024, 0x52800, 8192)   # (app_wifi.ld)
     if os.environ.get("FM1B_POOL_SPARE", "").isdigit():   # an app's own build for itself (a demo build with mirror)
         spare = int(os.environ["FM1B_POOL_SPARE"])

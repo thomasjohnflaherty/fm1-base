@@ -5,7 +5,7 @@
 /* The platform's boot and main loop (from X0X's, by way of FoMni-1): boot (WDT first, boot-loop guard, guards), LCD, input (TIMER5
  * 10 kHz), audio (ALNK0), USB; then the main loop: UI at ~60 frames/s, input polled in between. */
 extern uint32_t _data_start[], _data_end[], _data_load[], _bss_start[], _bss_end[];
-extern uint32_t _pool_start[], _pool_end[], _rt_start[], _rt_end[], _rt_load[];
+extern uint32_t _pool_start[], _pool_end[], _rt_start[], _rt_copy_end[], _rt_load[], _pt_start[], _pt_end[], _pt_load[];
 
 /* --------------------------------------------------------------- audio --- */
 /* HALF_FRAMES (unity.c, from APP_BLOCK): the I2S half buffer, 256 frames = 5.8 ms at 44.1 kHz by default */
@@ -1062,7 +1062,9 @@ void fm1_cstart(void)
         *d = 0;
     for (s = _data_load, d = _data_start; d < _data_end; s++, d++)
         *d = *s;
-    for (s = _rt_load, d = _rt_start; d < _rt_end; s++, d++)
+    for (s = _rt_load, d = _rt_start; d < _rt_copy_end; s++, d++)
+        *d = *s;
+    for (s = _pt_load, d = _pt_start; d < _pt_end; s++, d++)   /* .pool_text (app.ld) */
         *d = *s;
     fm1_mailbox_clear();
     fm1_guard_enable(FM1_GUARD_STACK | FM1_GUARD_WRITE | FM1_GUARD_BUS | FM1_GUARD_PC);

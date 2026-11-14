@@ -33,11 +33,17 @@ SECTIONS
     /* .c1_text: an app's second core's RAM loop (tools/build.py), copied and guarded with the rest */
     .ram_text : { _rt_start = .; KEEP(*(.ram_text*)) *(.volatile_ram_code) *(*.rf.text.cache.L2.rf_trim)
                   . = ALIGN(4); _c1_start = .; KEEP(*(.c1_text*)) . = ALIGN(4); _c1_end = .;
-                  _rt_end = .; } > RAMTEXT AT > XIP
+                  _rt_copy_end = .; } > RAMTEXT AT > XIP
     _rt_load = LOADADDR(.ram_text);
     .data : { . = ALIGN(4); _data_start = .; *(.data*) *(.sdata*) *(.*_data) . = ALIGN(4); _data_end = .; } > RAM AT > XIP
     _data_load = LOADADDR(.data);
     .bss (NOLOAD) : { _bss_start = .; *(.bss*) *(.sbss*) *(COMMON) *(.*_bss) *(.bd_base) . = ALIGN(4); _bss_end = .; } > RAM
+    /* .pool_text: an app's code that runs from RAM and calls into the flash (far calls, tools/build.py), at the pool's start
+     * (Ravel's layout): copied at boot after .ram_text; the guard's RAM code window (_rt_start.._rt_end) reaches to its end,
+     * across .data and .bss. Without it the window is .ram_text, as before */
+    .pool_text : { _pt_start = .; KEEP(*(.pool_text*)) . = ALIGN(4); _pt_end = .; } > POOL AT > XIP
+    _pt_load = LOADADDR(.pool_text);
+    _rt_end = _pt_end > _pt_start ? _pt_end : _rt_copy_end;
     .pool (NOLOAD) : { _pool_start = .; *(.pool*) . = ALIGN(4); _pool_end = .; } > POOL
     .noinit (NOLOAD) : { *(.noinit*) } > NOINIT
     /* The main loop stack is 16,128 B and the interrupt stack 22,272 B (they were 24,320 B and 7,936 B). The interrupt stack holds
