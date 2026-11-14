@@ -154,8 +154,12 @@ void fm1_timer5_irq(void)
         fm1b_dbg.nested++;
     if (lock_soft) {                                /* the main loop holds the lock: the stream goes on, the rest waits */
 #ifdef APP_TICK
-        if (sub == 0u)
+        if (sub == 0u) {
             t5_dropped++;                           /* this ms's app tick is gone (plat_ticks_dropped) */
+#if FM1B_FLASHTIME
+            plat_flashtime_drop();
+#endif
+        }
 #endif
 #if FELUCCA_UAC
         if (sub % 5u == 0u) {

@@ -547,6 +547,8 @@ def build_app():
     if WIFI:
         flags += ["-DFM1B_WIFI=1", "-DSHIM_WIFI=1", *inc(SRC / "ble" / "shim")]
     flags += opt_flags()
+    if os.environ.get("FM1B_FLASHTIME") == "1":
+        flags.append("-DFM1B_FLASHTIME=1")  # device-only diagnostic; absent/0 leaves normal flags unchanged
     for key, flag in (("usb_audio_in", "FM1B_UAC"), ("usb_audio_out", "FM1B_UAC_OUT")):
         if key in CONF and flag not in os.environ:
             flags.append(f"-D{flag}={int(bool(CONF[key]))}")

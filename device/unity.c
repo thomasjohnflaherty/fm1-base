@@ -44,6 +44,9 @@
 #include "fm1_time.h"
 #include "fm1_sys.h"
 #include "fm1_irq.h"
+#if FM1B_FLASHTIME
+#include "flashtime.c"
+#endif
 #include "fm1_guard.h"
 #include "fm1_input.h"
 #include "fm1_timer.h"
@@ -53,7 +56,11 @@
 #if FM1B_WIFI || FM1B_BLE
 #define FL_UID 1                          /* the flash's unique ID: the WiFi MAC, the Bluetooth name (plat_chip_uid) */
 #endif
+#if FM1B_FLASHTIME
+#include "flash_timed.h"
+#else
 #include "fm1_flash.h"
+#endif
 #include "fm1_xip.h"
 #include "fm1_perf.h"
 #include "fm1_clock.h"
