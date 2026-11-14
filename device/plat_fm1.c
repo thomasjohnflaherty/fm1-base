@@ -37,7 +37,13 @@ uint32_t plat_button_edges(uint32_t *released)
         *released = orl;
     return op;
 }
-uint32_t plat_key_edges(void) { return fm1_input_note_edges() & ((1u << NKEYS) - 1u); }
+uint32_t plat_key_edges(uint32_t *released)
+{
+    uint32_t r, p = fm1_input_note_edges(&r);
+    if (released)
+        *released = r & ((1u << NKEYS) - 1u);
+    return p & ((1u << NKEYS) - 1u);
+}
 static uint32_t plat_remote_keys(void) { return remote.keys; }
 
 int32_t plat_enc(int role)
@@ -196,8 +202,8 @@ uint32_t plat_lock_ui(void)
 static volatile uint32_t t5_sub, t5_dropped;
 static uint32_t tick_due(void)                      /* interrupts off */
 {
-    uint32_t prd, pending, cnt = fm1_timer5_phase(&prd, &pending);
-    return plat_tick_due_model(cnt, prd, pending, t5_sub);
+    struct plat_t5 s = plat_t5_snapshot(fm1_timer5_count, fm1_timer5_pending);
+    return plat_tick_due_model(s.cnt, fm1_timer5_period(), s.pending, t5_sub);
 }
 uint32_t plat_ticks_dropped(void) { return t5_dropped; }
 uint32_t plat_tick_due_us(void)

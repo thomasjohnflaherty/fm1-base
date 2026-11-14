@@ -201,7 +201,7 @@ int plat_lock_ui_when(uint32_t us, uint32_t *f) { (void)us; *f = plat_lock_ui();
 uint32_t plat_tick_due_us(void) { return 1000u; }
 uint32_t plat_ticks_dropped(void) { return 0; }
 uint32_t plat_button_edges(uint32_t *released) { if (released) *released = 0; return 0; }   /* the host's buttons are levels */
-uint32_t plat_key_edges(void) { return 0; }
+uint32_t plat_key_edges(uint32_t *released) { if (released) *released = 0; return 0; }
 void plat_unlock(uint32_t f) { (void)f; }
 void plat_yield(void)
 {

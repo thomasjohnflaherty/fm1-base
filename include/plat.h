@@ -161,10 +161,10 @@ uint32_t plat_lock_ui(void);                     /* the same, main loop only, fo
 int plat_lock_ui_when(uint32_t us, uint32_t *f);
 uint32_t plat_tick_due_us(void);
 uint32_t plat_ticks_dropped(void);               /* the app ticks dropped since boot (a tick that came during plat_lock_ui) */
-/* the press edges (and in *released the release edges) of the panel's buttons, plat_buttons' bits, and the press edges of
- * the keys, plat_keys' bits, since the last call: a press and its release between two reads of the levels. The host: 0 */
+/* the press edges (and in *released the release edges) of the panel's buttons, plat_buttons' bits, and of the keys, plat_keys'
+ * bits, since the last call: a press and its release between two reads of the levels. The host: 0 */
 uint32_t plat_button_edges(uint32_t *released);
-uint32_t plat_key_edges(void);
+uint32_t plat_key_edges(uint32_t *released);
 void plat_unlock(uint32_t f);
 void plat_yield(void);
 void plat_log(const char *line);
