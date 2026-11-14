@@ -21,11 +21,14 @@ Exit codes: 0 done, 1 cancelled or other error, 2 bad arguments or package,
 loader / no restart), 6 wrong model, or another identity after the install.
 """
 import argparse
+import fcntl
 import hashlib
+import os
 import queue
 import re
 import sys
 import time
+from pathlib import Path
 
 HS_QUERY = bytes([0xF0, 0x00, 0x32, 0x45, 0x00, 0x00, 0x00, 0x40, 0x7F, 0xF7])
 UPGRADE = bytes([0xF0, 0x22, 0x24, 0x35, 0x7F, 0xF7])
@@ -54,7 +57,7 @@ def is_stock(product):
     return re.fullmatch(r"FM-1_0\d\d", product) is not None and product != "FM-1_099"
 
 EXIT = {"usage": 2, "badpkg": 2, "notfound": 3, "model": 6, "open": 6, "lost": 4, "stopped": 4, "badreq": 4,
-        "noloader": 5, "noreturn": 5, "mismatch": 6}
+        "noloader": 5, "noreturn": 5, "mismatch": 6, "busy": 8}
 
 
 class InstallError(Exception):
@@ -501,6 +504,28 @@ def run(a, backend, out, ask):
     return 0
 
 
+def device_lock():
+    """The one lock for the real FM-1: ~/.cache/fm1-drive/sequence, the file tools/fm1-drive/drive.py and fm1_snapshot.py of a project
+    that uses this base lock too. Non-blocking: an install must not start beside another tool. Keep the returned file open."""
+    d = Path.home() / ".cache" / "fm1-drive"
+    d.mkdir(parents=True, exist_ok=True)
+    f = (d / "sequence").open("a+")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        f.close()
+        try:
+            who = (d / "holder").read_text().strip() or "unknown"
+        except OSError:
+            who = "unknown"
+        raise InstallError("busy", f"another FM-1 tool is running: {who}")
+    try:
+        (d / "holder").write_text(f"fm1_install.py (pid {os.getpid()})\n")
+    except OSError:
+        pass
+    return f
+
+
 def ask_tty(prompt):
     try:
         return input(prompt).strip().lower() in ("y", "yes")
@@ -518,8 +543,10 @@ def main(argv=None, backend=None, out=sys.stdout, ask=ask_tty):
     a = ap.parse_args(argv)
     if bool(a.info) == bool(a.package):
         ap.error("give a PACKAGE.fwsc or --info")
+    lock = None
     try:
         if backend is None:
+            lock = device_lock()    # a backend that is passed in is a test or a simulator: no lock
             try:
                 backend = MidoBackend()
             except ImportError:

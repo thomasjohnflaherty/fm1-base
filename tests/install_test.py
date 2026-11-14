@@ -329,7 +329,61 @@ def against_js():
     ok(I.LOADER_MARK in raw, f"{clean.name} carries the Felucca loader marker")
 
 
+
+def device_lock_test():
+    """The real FM-1 has one lock: an install refuses to start while another tool holds it, says who, and releases it at the end."""
+    import fcntl, os
+    home = tempfile.mkdtemp(prefix="install_lock_home_")
+    old_home, old_mido = os.environ.get("HOME"), I.MidoBackend
+    os.environ["HOME"] = home
+    try:
+        d = Path(home) / ".cache" / "fm1-drive"; d.mkdir(parents=True)
+        held = (d / "sequence").open("a+"); fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        (d / "holder").write_text("drive.py (pid 1)\n")
+        reached = []
+        def mido():
+            reached.append(1); raise I.InstallError("open", "no device in the test")
+        I.MidoBackend = mido
+        err = io.StringIO(); real_err = sys.stderr; sys.stderr = err
+        try:
+            rc = I.main(["--info"])
+        finally:
+            sys.stderr = real_err
+        ok(rc == I.EXIT["busy"] and not reached, f"an install is refused while another tool holds the device lock (exit {rc}, no MIDI port opened)")
+        ok("another FM-1 tool is running: drive.py (pid 1)" in err.getvalue(), "the refusal names the holder")
+        fcntl.flock(held, fcntl.LOCK_UN); held.close()
+        sys.stderr = io.StringIO()
+        try:
+            rc = I.main(["--info"])
+        finally:
+            sys.stderr = real_err
+        ok(rc == I.EXIT["open"] and reached == [1], "with the lock free the install gets to the MIDI port (exit %d)" % rc)
+        again = (d / "sequence").open("a+")
+        try:
+            fcntl.flock(again, fcntl.LOCK_EX | fcntl.LOCK_NB); freed = True
+        except BlockingIOError:
+            freed = False
+        ok(freed, "the lock is released when the install returns")
+        again.close()
+        # a passed-in backend (a simulator) takes no lock
+        held = (d / "sequence").open("a+"); fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        I.MidoBackend = old_mido
+        sys.stderr = io.StringIO()
+        try:
+            rc = I.main(["--info"], backend=type("B", (), {"input_names": lambda s: [], "output_names": lambda s: []})())
+        finally:
+            sys.stderr = real_err
+        ok(rc != I.EXIT["busy"], "a backend that is passed in is not stopped by the device lock")
+        held.close()
+    finally:
+        I.MidoBackend = old_mido
+        if old_home is None: os.environ.pop("HOME", None)
+        else: os.environ["HOME"] = old_home
+        shutil.rmtree(home, ignore_errors=True)
+
+
 wire()
+device_lock_test()
 installs()
 errors()
 from_open()
