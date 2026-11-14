@@ -55,7 +55,7 @@ static inline float fm_exp2_nf(int32_t n, float f)
     p = p * f + 6.931472057e-01f;
     p = p * f + 1.0f;
     b.f = p;
-    b.i += n << 23;
+    b.i += (int32_t)((uint32_t)n << 23);   /* n < 0: a signed left shift is undefined, the unsigned one gives the same bits */
     return b.f;
 }
 
