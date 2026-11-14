@@ -197,6 +197,8 @@ void plat_play_red(int red) { (void)red; }      /* the device's PLAY colour: gre
 void plat_leds(uint32_t b, uint32_t k) { plat_lights(b, k, glow_on ? ~b : 0u, 0, glow_on ? 2 : 0); }
 uint32_t plat_lock(void) { return 0; }  /* one thread: the tick runs between the main loop's steps (run_ms) */
 uint32_t plat_lock_ui(void) { return plat_lock(); }
+int plat_lock_ui_when(uint32_t us, uint32_t *f) { (void)us; *f = plat_lock_ui(); return 1; }   /* no tick is lost here */
+uint32_t plat_tick_due_us(void) { return 1000u; }
 void plat_unlock(uint32_t f) { (void)f; }
 void plat_yield(void)
 {

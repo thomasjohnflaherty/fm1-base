@@ -154,6 +154,12 @@ int plat_net_task(void (*fn)(void *), void *arg, const char *name);   /* a task 
  * what they share (it nests) */
 uint32_t plat_lock(void);
 uint32_t plat_lock_ui(void);                     /* the same, main loop only, for a long lock: USB audio goes on during it */
+/* plat_lock_ui only when the app tick that comes next is at least `us` away: a tick that comes during plat_lock_ui is
+ * gone (the device), so a lock that ends in time loses none. 1 and the lock in *f, or 0 and no lock (try again later).
+ * The check and the lock are one step with interrupts off. plat_tick_due_us: the time to the next app tick, for a
+ * cheap look first (it can be stale when the caller acts on it). Main loop only. The host: always 1, and 1000. */
+int plat_lock_ui_when(uint32_t us, uint32_t *f);
+uint32_t plat_tick_due_us(void);
 void plat_unlock(uint32_t f);
 void plat_yield(void);
 void plat_log(const char *line);

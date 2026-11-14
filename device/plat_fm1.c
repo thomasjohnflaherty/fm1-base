@@ -176,6 +176,39 @@ uint32_t plat_lock_ui(void)
 #endif
     return d;
 }
+/* fm1_timer5_irq's count of its interrupts (sub: the one that sees 0 runs the app tick) and the last one's start. Each
+ * interrupt comes 100 us after the one before, or at once when it was held up (the ones held up count as one) */
+static volatile uint32_t t5_sub, t5_at;
+static uint32_t tick_due(uint32_t now)              /* interrupts off */
+{
+    uint32_t next = t5_at + 100u * FM1_TICKS_PER_US;
+    if ((int32_t)(next - now) < 0)
+        next = now;
+    return (next - now) / FM1_TICKS_PER_US + 100u * ((10u - t5_sub) % 10u);
+}
+uint32_t plat_tick_due_us(void)
+{
+    uint32_t us;
+    fm1_irq_off();
+    us = tick_due(fm1_ticks());
+    if (!lock_depth || lock_soft)
+        fm1_irq_on();
+    return us;
+}
+int plat_lock_ui_when(uint32_t us, uint32_t *f)
+{
+    fm1_irq_off();                                  /* plat_lock_ui's own fm1_irq_off follows: nothing comes between */
+#if FELUCCA_UAC && defined(APP_TICK)
+    if (lock_depth == 0 && lock_audio && !radio_quiet && tick_due(fm1_ticks()) < us) {
+        fm1_irq_on();
+        return 0;
+    }
+#else
+    (void)us;
+#endif
+    *f = plat_lock_ui();
+    return 1;
+}
 void plat_unlock(uint32_t f)
 {
     (void)f;

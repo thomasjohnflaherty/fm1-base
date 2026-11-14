@@ -191,6 +191,8 @@ void fm1_timer5_irq(void)
     }
     if (++sub == 10u)
         sub = 0;
+    t5_sub = sub;                                   /* (plat_lock_ui_when: when the next app tick comes) */
+    t5_at = t5_prev;
     {
         uint32_t run = (fm1_ticks() - t5_prev) / FM1_TICKS_PER_US;
         if (run > t5_run_max)
