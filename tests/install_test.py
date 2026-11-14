@@ -64,7 +64,7 @@ class FakeLink:
         self.closed = True
 
 
-class FakeFM1:
+class FakeFM1(I.HostBackend):
     """a MIDI backend with one FM-1 on it"""
 
     def __init__(self, image, identity="FM-1_015", name="FM-1", unplug_after=None, after_write="FM-1_900",
@@ -370,10 +370,19 @@ def device_lock_test():
         I.MidoBackend = old_mido
         sys.stderr = io.StringIO()
         try:
-            rc = I.main(["--info"], backend=type("B", (), {"input_names": lambda s: [], "output_names": lambda s: []})())
+            rc = I.main(["--info"], backend=type("B", (I.HostBackend,), {"input_names": lambda s: [], "output_names": lambda s: []})())
         finally:
             sys.stderr = real_err
-        ok(rc != I.EXIT["busy"], "a backend that is passed in is not stopped by the device lock")
+        ok(rc != I.EXIT["busy"], "a HostBackend is not stopped by the device lock")
+        held.close()
+        held = (d / "sequence").open("a+"); fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for b in (type("Real", (), {"input_names": lambda s: [], "output_names": lambda s: []})(), 0, ""):
+            sys.stderr = io.StringIO()
+            try:
+                rc = I.main(["--info"], backend=b)
+            finally:
+                sys.stderr = real_err
+            ok(rc == I.EXIT["busy"], f"a passed-in backend that is not a HostBackend ({b!r:.20}) takes the device lock (exit {rc})")
         held.close()
     finally:
         I.MidoBackend = old_mido

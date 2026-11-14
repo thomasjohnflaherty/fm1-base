@@ -504,6 +504,11 @@ def run(a, backend, out, ask):
     return 0
 
 
+class HostBackend:
+    """Marks a backend that cannot reach a real FM-1 (a simulator, the emulator, a test's fake device). Only such a backend runs without
+    the device lock; no backend, and any other one (a MidoBackend, a wrapper around a real port), takes it."""
+
+
 def device_lock():
     """The one lock for the real FM-1: ~/.cache/fm1-drive/sequence, the file tools/fm1-drive/drive.py and fm1_snapshot.py of a project
     that uses this base lock too. Non-blocking: an install must not start beside another tool. Keep the returned file open."""
@@ -545,8 +550,9 @@ def main(argv=None, backend=None, out=sys.stdout, ask=ask_tty):
         ap.error("give a PACKAGE.fwsc or --info")
     lock = None
     try:
+        if not isinstance(backend, HostBackend):
+            lock = device_lock()    # anything that can reach a real port; only a HostBackend (simulator, test) runs without it
         if backend is None:
-            lock = device_lock()    # a backend that is passed in is a test or a simulator: no lock
             try:
                 backend = MidoBackend()
             except ImportError:
