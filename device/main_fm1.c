@@ -153,6 +153,10 @@ void fm1_timer5_irq(void)
     if (fm1b_dbg.in_audio)
         fm1b_dbg.nested++;
     if (lock_soft) {                                /* the main loop holds the lock: the stream goes on, the rest waits */
+#ifdef APP_TICK
+        if (sub == 0u)
+            t5_dropped++;                           /* this ms's app tick is gone (plat_ticks_dropped) */
+#endif
 #if FELUCCA_UAC
         if (sub % 5u == 0u) {
             usb_due = 1;
@@ -192,7 +196,6 @@ void fm1_timer5_irq(void)
     if (++sub == 10u)
         sub = 0;
     t5_sub = sub;                                   /* (plat_lock_ui_when: when the next app tick comes) */
-    t5_at = t5_prev;
     {
         uint32_t run = (fm1_ticks() - t5_prev) / FM1_TICKS_PER_US;
         if (run > t5_run_max)

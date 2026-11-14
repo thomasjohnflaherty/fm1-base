@@ -2,6 +2,7 @@
  * Copyright (C) 2026 Charles Vestal */
 /* fm1-base on the FM-1: plat.h over felucca-bsp's chip and board layers, the panel map, the USB rings and storage.
  * Part of the unity build (unity.c), after usb.c, storage.c and panel.c. */
+#include "plat_tick.h"
 
 uint32_t plat_ms(void) { return fm1_ms; }
 
@@ -23,6 +24,20 @@ uint32_t plat_buttons(void)
 }
 
 uint32_t plat_keys(void) { return (fm1_in.notes | remote.keys | mirror_in_keys()) & ((1u << NKEYS) - 1u); }
+/* the panel's latched press and release edges since the last call (the scan's, fm1_input_edges): a press and its release
+ * between two reads of plat_buttons are both here. The remote's and the mirror's buttons are levels only */
+uint32_t plat_button_edges(uint32_t *released)
+{
+    uint32_t r, p = fm1_input_edges(&r), op = 0, orl = 0, i;
+    for (i = 0; i < NB; i++) {
+        op |= ((p >> panel.btn[i]) & 1u) << i;
+        orl |= ((r >> panel.btn[i]) & 1u) << i;
+    }
+    if (released)
+        *released = orl;
+    return op;
+}
+uint32_t plat_key_edges(void) { return fm1_input_note_edges() & ((1u << NKEYS) - 1u); }
 static uint32_t plat_remote_keys(void) { return remote.keys; }
 
 int32_t plat_enc(int role)
@@ -176,21 +191,20 @@ uint32_t plat_lock_ui(void)
 #endif
     return d;
 }
-/* fm1_timer5_irq's count of its interrupts (sub: the one that sees 0 runs the app tick) and the last one's start. Each
- * interrupt comes 100 us after the one before, or at once when it was held up (the ones held up count as one) */
-static volatile uint32_t t5_sub, t5_at;
-static uint32_t tick_due(uint32_t now)              /* interrupts off */
+/* fm1_timer5_irq's count of its interrupts (sub: the one that sees 0 runs the app tick), and the app ticks it dropped
+ * because the main loop held plat_lock_ui (lock_soft) */
+static volatile uint32_t t5_sub, t5_dropped;
+static uint32_t tick_due(void)                      /* interrupts off */
 {
-    uint32_t next = t5_at + 100u * FM1_TICKS_PER_US;
-    if ((int32_t)(next - now) < 0)
-        next = now;
-    return (next - now) / FM1_TICKS_PER_US + 100u * ((10u - t5_sub) % 10u);
+    uint32_t prd, pending, cnt = fm1_timer5_phase(&prd, &pending);
+    return plat_tick_due_model(cnt, prd, pending, t5_sub);
 }
+uint32_t plat_ticks_dropped(void) { return t5_dropped; }
 uint32_t plat_tick_due_us(void)
 {
     uint32_t us;
     fm1_irq_off();
-    us = tick_due(fm1_ticks());
+    us = tick_due();
     if (!lock_depth || lock_soft)
         fm1_irq_on();
     return us;
@@ -199,7 +213,7 @@ int plat_lock_ui_when(uint32_t us, uint32_t *f)
 {
     fm1_irq_off();                                  /* plat_lock_ui's own fm1_irq_off follows: nothing comes between */
 #if FELUCCA_UAC && defined(APP_TICK)
-    if (lock_depth == 0 && lock_audio && !radio_quiet && tick_due(fm1_ticks()) < us) {
+    if (lock_depth == 0 && lock_audio && !radio_quiet && tick_due() < us) {
         fm1_irq_on();
         return 0;
     }
