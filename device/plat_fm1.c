@@ -203,7 +203,7 @@ static volatile uint32_t t5_sub, t5_dropped;
 static uint32_t tick_due(void)                      /* interrupts off */
 {
     struct plat_t5 s = plat_t5_snapshot(fm1_timer5_count, fm1_timer5_pending);
-    return plat_tick_due_model(s.cnt, fm1_timer5_period(), s.pending, t5_sub);
+    return plat_tick_due(s, fm1_timer5_period(), t5_sub);
 }
 uint32_t plat_ticks_dropped(void) { return t5_dropped; }
 uint32_t plat_tick_due_us(void)

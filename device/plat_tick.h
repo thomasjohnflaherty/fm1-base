@@ -7,17 +7,20 @@
 #include <stdint.h>
 /* TIMER5's count and pending bit as one snapshot (the interrupts off): the count rolls over between two reads all the same, and
  * a pending bit read before the rollover with the count read after it puts the tick a period late. The count, the bit, the count
- * again: when the count went back, a rollover came between, and the three reads are made again (a period is 100 us) */
-struct plat_t5 { uint32_t cnt, pending; };
+ * again: when the count went back, a rollover came between, and the three reads are made again (a period is 100 us). At most 3 tries
+ * (the interrupts are off: Codex u242): then ok is 0 and plat_tick_due answers 0, a tick due now, so the caller waits */
+struct plat_t5 { uint32_t cnt, pending, ok; };
 static inline struct plat_t5 plat_t5_snapshot(uint32_t (*count)(void), uint32_t (*pending)(void))
 {
-    uint32_t c0, p, c1;
-    do {
+    uint32_t c0, p, c1, i;
+    for (i = 0; i < 3u; i++) {
         c0 = count();
         p = pending();
         c1 = count();
-    } while (c1 < c0);
-    return (struct plat_t5){c1, p};
+        if (c1 >= c0)
+            return (struct plat_t5){c1, p, 1};
+    }
+    return (struct plat_t5){0, 0, 0};
 }
 static inline uint32_t plat_tick_due_model(uint32_t cnt, uint32_t prd, uint32_t pending, uint32_t sub)
 {
@@ -28,4 +31,8 @@ static inline uint32_t plat_tick_due_model(uint32_t cnt, uint32_t prd, uint32_t 
     if (!pending)
         return end + 100u * n;
     return n ? end + 100u * (n - 1u) : 0u;
+}
+static inline uint32_t plat_tick_due(struct plat_t5 s, uint32_t prd, uint32_t sub)   /* 0 when the snapshot failed: a tick due now */
+{
+    return s.ok ? plat_tick_due_model(s.cnt, prd, s.pending, sub) : 0u;
 }
