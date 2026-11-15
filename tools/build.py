@@ -691,6 +691,14 @@ def mul64_near_loads(dis, window=4):
     return found
 
 
+def pool_used(sym):
+    """the pool's use: from .pool_text's start when the image has code there (app.ld puts it at the pool's start, and the
+    pad before .pool counts), else .pool alone. An empty .pool_text is 0 B: app.ld leaves its start at the pool's origin,
+    app_wifi.ld at the end of .ram_text (tests/build_pool_test.py)"""
+    pt0, pt1 = sym("_pt_start"), sym("_pt_end")
+    return sym("_pool_end") - (pt0 if pt1 > pt0 else sym("_pool_start"))
+
+
 def check(img, syms, dis, rt):
     errors, notes = [], []
     m = re.search(r"^([0-9a-f]+) .*\s_start$", syms, re.M)
@@ -750,7 +758,7 @@ def check(img, syms, dis, rt):
         mm = re.search(r"^([0-9a-f]+) .*\s" + name + r"$", syms, re.M)
         return int(mm.group(1), 16) if mm else 0
     bss = sym("_bss_end") - 0x01C08000
-    pool = sym("_pool_end") - (sym("_pt_start") or sym("_pool_start"))   # (.pool_text, at the pool's start, counts)
+    pool = pool_used(sym)
     ram, pool_max, spare = (128 * 1024, 0x4C000, 2048) if WIFI else (96 * 1024, 0x52800, 8192)   # (app_wifi.ld)
     if os.environ.get("FM1B_POOL_SPARE", "").isdigit():   # an app's own build for itself (a demo build with mirror)
         spare = int(os.environ["FM1B_POOL_SPARE"])
