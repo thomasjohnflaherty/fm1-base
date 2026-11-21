@@ -140,6 +140,10 @@ static uint32_t t5_gap_max, t5_late, t5_run_max;                /* the longest g
  * periods that never ran (a gap of g us lost round(g / 100) - 1 of them, from 150 us); ms_t0 is when the current ms
  * (fm1_ms) began, so plat_ms_start can say when any recent ms began. */
 static uint32_t t5_lost, ms_t0;
+/* tick_req_at: when TIMER5 made the oldest request (a 1 kHz phase) that no tick body has taken yet, also one that the UI
+ * lock deferred or dropped; tick_claimed_at: the one the running body took (plat_tick_claimed_at) */
+static volatile uint32_t tick_req_at, tick_claimed_at;
+uint32_t plat_tick_claimed_at(void) { return tick_claimed_at; }
 #endif
 #ifdef APP_SOFT0
 /* (fm1-hapax u309, trail 40 D133) the app tick's body runs in SOFT0 (level 4, fm1_soft0.h), between the render (ALNK0,
@@ -168,6 +172,12 @@ void fm1_soft0_irq(void)
     fm1_soft0_clear();
     n = soft0_req;
     soft0_req = 0;
+#ifdef APP_TICK_PROBE
+    if (n) {
+        tick_claimed_at = tick_req_at;
+        tick_req_at = 0;
+    }
+#endif
     fm1_irq_on();
     if (!n)
         return;
@@ -221,6 +231,10 @@ void fm1_timer5_irq(void)
     fm1b_dbg.timer_irqs++;
     if (fm1b_dbg.in_audio)
         fm1b_dbg.nested++;
+#if defined(APP_TICK_PROBE) && defined(APP_TICK)
+    if (sub == 0u && !tick_req_at)
+        tick_req_at = t5_prev ? t5_prev : 1u;       /* this period's entry (t5_prev = now above) */
+#endif
     if (lock_soft) {                                /* the main loop holds the lock: the stream goes on, the rest waits */
 #ifdef APP_SOFT0
         if (sub == 0u)
@@ -262,6 +276,10 @@ void fm1_timer5_irq(void)
 #ifdef APP_SOFT0
             soft0_request();
 #else
+#ifdef APP_TICK_PROBE
+            tick_claimed_at = tick_req_at;
+            tick_req_at = 0;
+#endif
             in_tick = 1;
             app_tick();
             in_tick = 0;
