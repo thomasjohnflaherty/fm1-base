@@ -135,6 +135,71 @@ static void audio_silence(void)                     /* IRQs off (flash erase): t
 static uint8_t usb_due;
 static uint32_t t5_gap_max, t5_late, t5_run_max;                /* the longest gap between ticks (us), and gaps over 300 us:
                                                      * the key and light scan held up (the log reads and clears) */
+#ifdef APP_TICK_PROBE
+/* (fm1-hapax u309, trail 40 D133) probes the app resets with its own (plat_t5_probe_reset): t5_lost counts the TIMER5
+ * periods that never ran (a gap of g us lost round(g / 100) - 1 of them, from 150 us); ms_t0 is when the current ms
+ * (fm1_ms) began, so plat_ms_start can say when any recent ms began. */
+static uint32_t t5_lost, ms_t0;
+#endif
+#ifdef APP_SOFT0
+/* (fm1-hapax u309, trail 40 D133) the app tick's body runs in SOFT0 (level 4, fm1_soft0.h), between the render (ALNK0,
+ * 3) and TIMER5 (5). TIMER5 only requests it at the 1 kHz phase, also while the main loop holds the UI lock: the lock
+ * masks SOFT0 (plat_lock_ui), so the request waits and runs at the unlock (none is dropped; soft0_deferred counts them).
+ * SOFT0 clears the latch and takes the requests in one step with the interrupts off, and runs only for a request it
+ * took. The counts (RAM, reset by plat_t5_probe_reset): requests, the deferred ones, the ones made while SOFT0 ran, runs. */
+static volatile uint32_t soft0_req;
+static volatile uint8_t soft0_running;
+static uint32_t soft0_requests, soft0_deferred, soft0_busy, soft0_runs;
+static void soft0_request(void)                     /* TIMER5 */
+{
+    ++soft0_req;
+    ++soft0_requests;
+    if (lock_soft)
+        ++soft0_deferred;
+    if (soft0_running)
+        ++soft0_busy;
+    fm1_soft0_raise();
+}
+FM1_SOFT0_ENTRY(isr_soft0, fm1_soft0_irq);
+void fm1_soft0_irq(void)
+{
+    uint32_t n;
+    fm1_irq_off();                                  /* the clear and the take: one step */
+    fm1_soft0_clear();
+    n = soft0_req;
+    soft0_req = 0;
+    fm1_irq_on();
+    if (!n)
+        return;
+    ++soft0_runs;
+    soft0_running = 1;
+    in_tick = 1;                                    /* plat_midi_send: the tick's send path, as from TIMER5 */
+    app_tick();
+    in_tick = 0;
+    soft0_running = 0;
+}
+#endif
+#ifdef APP_TICK_PROBE
+void plat_t5_probe_reset(void)
+{
+    uint32_t f = plat_lock();
+    t5_gap_max = t5_late = t5_run_max = t5_lost = 0;
+#ifdef APP_SOFT0
+    soft0_requests = soft0_deferred = soft0_busy = soft0_runs = 0;
+#endif
+    plat_unlock(f);
+}
+uint32_t plat_ms_start(uint32_t ms)                 /* plat_ticks24 when ms began (ms at most about 170 s back) */
+{
+    uint32_t t, now;
+    fm1_irq_off();
+    t = ms_t0;
+    now = fm1_ms;
+    if (!lock_depth || lock_soft)
+        fm1_irq_on();
+    return t - (now - ms) * (1000u * FM1_TICKS_PER_US);
+}
+#endif
 void fm1_timer5_irq(void)
 {
     static uint32_t sub, t5_prev;
@@ -146,6 +211,10 @@ void fm1_timer5_irq(void)
                 t5_gap_max = gap;
             if (gap > 300u)
                 t5_late++;
+#ifdef APP_TICK_PROBE
+            if (gap >= 150u)
+                t5_lost += (gap + 50u) / 100u - 1u;
+#endif
         }
         t5_prev = now;
     }
@@ -153,7 +222,10 @@ void fm1_timer5_irq(void)
     if (fm1b_dbg.in_audio)
         fm1b_dbg.nested++;
     if (lock_soft) {                                /* the main loop holds the lock: the stream goes on, the rest waits */
-#ifdef APP_TICK
+#ifdef APP_SOFT0
+        if (sub == 0u)
+            soft0_request();                        /* masked by the lock: it runs at the unlock */
+#elif defined(APP_TICK)
         if (sub == 0u)
             t5_dropped++;                           /* this ms's app tick is gone (plat_ticks_dropped) */
 #endif
@@ -187,9 +259,13 @@ void fm1_timer5_irq(void)
         }
     #ifdef APP_TICK
         if (sub == 0u) {                                /* 1 kHz: the app's tick (a clock, a sequencer) */
+#ifdef APP_SOFT0
+            soft0_request();
+#else
             in_tick = 1;
             app_tick();
             in_tick = 0;
+#endif
         }
     #endif
     }
@@ -210,6 +286,9 @@ void fm1_timer5_irq(void)
             acc -= 1000u * FM1_TICKS_PER_US;
             fm1_ms++;
         }
+#ifdef APP_TICK_PROBE
+        ms_t0 = now - acc;
+#endif
     }
 }
 extern void isr_timer5(void);
@@ -924,7 +1003,12 @@ static void fm1_main(void)
 #endif
     /* above ALNK0 (3): the key / encoder / LED matrix is scanned one column per tick and must keep
      * its rhythm through a render (X0X's finding: below the audio, turns lost steps and LEDs flickered) */
+#ifdef APP_SOFT0
+    fm1_irq_attach(FM1_IRQ_SOFT0, isr_soft0, 4);   /* u309: SOFT0 at 4 (the app tick's body), TIMER5 above it at 5 */
+    fm1_timer5_start(isr_timer5, 5);
+#else
     fm1_timer5_start(isr_timer5, 4);
+#endif
     fm1_guard_lock_top();
     fm1_irq_enable_all();
     fm1_delay_ms(30);

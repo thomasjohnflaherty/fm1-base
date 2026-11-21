@@ -240,6 +240,12 @@ uint32_t plat_xruns(void);
  * a span is the unsigned difference of two reads */
 #define PLAT_TICKS_PER_US 24u
 uint32_t plat_ticks24(void);
+#ifdef APP_TICK_PROBE
+/* (fm1-hapax u309) the app's timing probes: plat_ms_start(ms) is plat_ticks24 when that ms began; plat_t5_probe_reset
+ * zeroes TIMER5's longest gap, run, late and lost-period counts (and APP_SOFT0's request counts) */
+uint32_t plat_ms_start(uint32_t ms);
+void plat_t5_probe_reset(void);
+#endif
 
 /* The second core (fm1.toml cpu2 = true: FM1B_CPU2; felucca-bsp's chip/fm1_cpu1.h, Melodee's): a worker for a part of
  * the render. Start it in app_init (the one time it may start: at power-on, before the audio and the timers); the

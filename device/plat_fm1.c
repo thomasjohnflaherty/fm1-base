@@ -192,6 +192,9 @@ uint32_t plat_lock_ui(void)
         lock_ra = (uint32_t)(uintptr_t)__builtin_return_address(0);
         lock_soft = 1;
         fm1_irq_mask(FM1_IRQ_ALNK0);
+#ifdef APP_SOFT0
+        fm1_irq_mask(FM1_IRQ_SOFT0);                /* u309: the app tick's body waits for the unlock (main_fm1.c soft0_request) */
+#endif
         fm1_irq_on();
     }
 #endif
@@ -244,6 +247,9 @@ void plat_unlock(uint32_t f)
         if (lock_soft) {
             lock_soft = 0;
             fm1_irq_unmask(FM1_IRQ_ALNK0);
+#ifdef APP_SOFT0
+            fm1_irq_unmask(FM1_IRQ_SOFT0);
+#endif
         }
         fm1_irq_on();
     } else if (lock_soft) {

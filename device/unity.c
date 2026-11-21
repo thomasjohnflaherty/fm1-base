@@ -44,6 +44,9 @@
 #include "fm1_time.h"
 #include "fm1_sys.h"
 #include "fm1_irq.h"
+#ifdef APP_SOFT0
+#include "fm1_soft0.h"              /* u309: the app tick's body in SOFT0 (main_fm1.c) */
+#endif
 #include "fm1_guard.h"
 #include "fm1_input.h"
 #include "fm1_timer.h"
