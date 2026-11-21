@@ -183,9 +183,8 @@ void fm1_soft0_irq(void)
         return;
     ++soft0_runs;
     soft0_running = 1;
-    in_tick = 1;                                    /* plat_midi_send: the tick's send path, as from TIMER5 */
-    app_tick();
-    in_tick = 0;
+    app_tick();                                     /* in_tick stays 0: each plat_midi_send takes plat_lock, so its ready test and
+                                                     * its publish are one step against TIMER5's USB poll and a reset (r3) */
     soft0_running = 0;
 }
 #endif
@@ -197,6 +196,17 @@ void plat_t5_probe_reset(void)
 #ifdef APP_SOFT0
     soft0_requests = soft0_deferred = soft0_busy = soft0_runs = 0;
 #endif
+    plat_unlock(f);
+}
+void plat_t5_probe(uint32_t v[8])                  /* the app's readout (r3): SOFT0 counts (0 without APP_SOFT0), TIMER5's */
+{
+    uint32_t f = plat_lock();
+#ifdef APP_SOFT0
+    v[0] = soft0_requests; v[1] = soft0_deferred; v[2] = soft0_busy; v[3] = soft0_runs;
+#else
+    v[0] = v[1] = v[2] = v[3] = 0;
+#endif
+    v[4] = t5_gap_max; v[5] = t5_late; v[6] = t5_run_max; v[7] = t5_lost;
     plat_unlock(f);
 }
 uint32_t plat_ms_start(uint32_t ms)                 /* plat_ticks24 when ms began (ms at most about 170 s back) */

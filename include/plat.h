@@ -245,7 +245,8 @@ uint32_t plat_ticks24(void);
  * zeroes TIMER5's longest gap, run, late and lost-period counts (and APP_SOFT0's request counts) */
 uint32_t plat_ms_start(uint32_t ms);
 void plat_t5_probe_reset(void);
-uint32_t plat_tick_claimed_at(void);   /* plat_ticks24 of the oldest 1 kHz request the running tick body took */
+uint32_t plat_tick_claimed_at(void);
+void plat_t5_probe(uint32_t v[8]);     /* SOFT0 requests, deferred, busy, runs; TIMER5 gap max, gaps over 300 us, run max, lost periods */   /* plat_ticks24 of the oldest 1 kHz request the running tick body took */
 
 /* The second core (fm1.toml cpu2 = true: FM1B_CPU2; felucca-bsp's chip/fm1_cpu1.h, Melodee's): a worker for a part of
  * the render. Start it in app_init (the one time it may start: at power-on, before the audio and the timers); the
